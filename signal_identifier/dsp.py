@@ -1,0 +1,59 @@
+"""Basic signal processing helpers (numpy only, no scipy needed)."""
+
+from __future__ import annotations
+
+import numpy as np
+
+TARGET_RATE = 12000  # we analyse audio at roughly 12 kHz; plenty for a 3 kHz SSB passband
+
+
+def lowpass_fir(cutoff: float, fs: float, taps: int = 129) -> np.ndarray:
+    """Windowed-sinc low-pass filter."""
+    n = np.arange(taps) - (taps - 1) / 2
+    h = np.sinc(2 * cutoff / fs * n) * np.hamming(taps)
+    return h / h.sum()
+
+
+def decimate(x: np.ndarray, fs: float) -> tuple[np.ndarray, float]:
+    """Bring audio down to about TARGET_RATE. Returns (samples, new_rate)."""
+    x = np.asarray(x, dtype=np.float64)
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    factor = max(1, int(round(fs / TARGET_RATE)))
+    if factor == 1:
+        return x, float(fs)
+    h = lowpass_fir(0.45 * fs / factor, fs)
+    y = np.convolve(x, h, mode="same")[::factor]
+    return y, fs / factor
+
+
+def stft_db(x: np.ndarray, nfft: int, hop: int) -> np.ndarray:
+    """Power spectrogram in dB, shape (frames, nfft//2+1)."""
+    if len(x) < nfft:
+        x = np.pad(x, (0, nfft - len(x)))
+    nframes = 1 + (len(x) - nfft) // hop
+    idx = np.arange(nfft)[None, :] + hop * np.arange(nframes)[:, None]
+    frames = x[idx] * np.hanning(nfft)[None, :]
+    spec = np.abs(np.fft.rfft(frames, axis=1)) ** 2
+    return 10 * np.log10(spec + 1e-20)
+
+
+def running_median(v: np.ndarray, width: int) -> np.ndarray:
+    width = max(1, int(width) | 1)
+    pad = width // 2
+    vp = np.pad(v, pad, mode="edge")
+    windows = np.lib.stride_tricks.sliding_window_view(vp, width)
+    return np.median(windows, axis=1)
+
+
+def noise_floor_db(spec_db: np.ndarray, smooth_bins: int) -> np.ndarray:
+    """Estimate the mean noise power (dB) in each frequency bin.
+
+    Takes a low percentile over time (finds the quiet moments), converts it to
+    an estimate of the mean noise level, then smooths across frequency so a
+    signal that never stops (a carrier, RTTY) doesn't hide its own noise floor.
+    """
+    p20 = np.percentile(spec_db, 20, axis=0)
+    # For pure noise the 20th percentile sits ~6.5 dB below the mean.
+    mean_est = p20 + 6.5
+    return running_median(mean_est, smooth_bins)
