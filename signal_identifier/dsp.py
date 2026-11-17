@@ -53,7 +53,8 @@ def noise_floor_db(spec_db: np.ndarray, smooth_bins: int) -> np.ndarray:
     an estimate of the mean noise level, then smooths across frequency so a
     signal that never stops (a carrier, RTTY) doesn't hide its own noise floor.
     """
-    p20 = np.percentile(spec_db, 20, axis=0)
-    # For pure noise the 20th percentile sits ~6.5 dB below the mean.
-    mean_est = p20 + 6.5
+    p5 = np.percentile(spec_db, 5, axis=0)
+    # For pure noise the 5th percentile sits ~12.9 dB below the mean, so this
+    # still works when a signal is present 90% of the time.
+    mean_est = p5 + 12.9
     return running_median(mean_est, smooth_bins)
