@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .dsp import decimate, noise_floor_db, stft_db, undo_agc
+from .dsp import decimate, noise_floor_db, passband_mask, stft_db, undo_agc  # noqa: F401
 
 F_LO, F_HI = 150.0, 3500.0
 DEBUG = False  # the part of the audio we look at (SSB passband)
@@ -98,18 +98,24 @@ class Analyzer:
         self.nfft_l = int(2 ** round(np.log2(fs / 5.86)))
         self.hop_l = self.nfft_l // 8
         self.fl = np.fft.rfftfreq(self.nfft_l, 1 / fs)
-        self.L = undo_agc(stft_db(x, self.nfft_l, self.hop_l), self.fl)
+        raw = stft_db(x, self.nfft_l, self.hop_l)
+        self.pb_l = passband_mask(raw, self.fl)
+        self.L = undo_agc(raw, self.pb_l)
         self.dt_l = self.hop_l / fs
-        self.floor_l = noise_floor_db(self.L, smooth_bins=round(300 / (fs / self.nfft_l)))
-        self.act_l = self.L > self.floor_l + 7.0
+        self.floor_l = noise_floor_db(self.L, round(300 / (fs / self.nfft_l)), self.pb_l)
+        self.act_l = (self.L > self.floor_l + 7.0) & self.pb_l[None, :]
 
         # Short FFT: ~5 ms steps, good for keying and loudness changes (CW, voice).
         self.nfft_s = int(2 ** round(np.log2(fs / 47)))
         self.hop_s = self.nfft_s // 4
         self.fs_bins = np.fft.rfftfreq(self.nfft_s, 1 / fs)
-        self.S = undo_agc(stft_db(x, self.nfft_s, self.hop_s), self.fs_bins)
+        raw = stft_db(x, self.nfft_s, self.hop_s)
+        # Use the fine-frequency view to decide where the filter passband is.
+        pb_idx = np.clip(np.searchsorted(self.fl, self.fs_bins), 0, len(self.fl) - 1)
+        self.pb_s = self.pb_l[pb_idx]
+        self.S = undo_agc(raw, self.pb_s)
         self.dt_s = self.hop_s / fs
-        self.floor_s = noise_floor_db(self.S, smooth_bins=7)
+        self.floor_s = noise_floor_db(self.S, 7, self.pb_s)
 
     # -- helpers ------------------------------------------------------------
 
@@ -369,13 +375,17 @@ class Analyzer:
     def _always_one_on(self, f1: float, f2: float) -> bool:
         """RTTY: while transmitting, one of the two tones is always on. Two
         separate CW stations both go quiet in their gaps."""
-        ons = []
+        total = 0.0
+        noise_total = 0.0
         for f in (f1, f2):
             env, noise = self.band_envelope(f - 20, f + 20)
-            rel = env - noise
-            peak = np.percentile(rel, 98)
-            ons.append(rel > max(6.0, peak - 12.0))
-        either = ons[0] | ons[1]
+            total = total + 10 ** (env / 10)
+            noise_total += 10 ** (noise / 10)
+        rel = 10 * np.log10(total + 1e-20) - 10 * np.log10(noise_total)
+        k = max(1, int(0.03 / self.dt_s))
+        rel = 10 * np.log10(np.convolve(10 ** (rel / 10), np.ones(k) / k, mode="same") + 1e-20)
+        peak = np.percentile(rel, 98)
+        either = rel > max(6.0, peak - 12.0)
         idx = np.flatnonzero(either)
         if len(idx) < 10:
             return False
@@ -408,7 +418,21 @@ class Analyzer:
         peak = np.percentile(rel, 98)
         if peak < 6:
             return None
-        on = rel > max(6.0, peak - 10.0)
+        # Key-down threshold: halfway between noise and the signal's peak (but no
+        # more than 10 dB down), so AGC overshoot on strong signals doesn't
+        # shorten every dot and dash.
+        on = rel > max(6.0, min(peak - 10.0, peak / 2))
+        # Bridge tiny dropouts (key clicks, noise) shorter than ~10 ms.
+        gap = max(1, int(0.010 / self.dt_s))
+        on_runs0, off_runs0 = _runs(on)
+        if len(off_runs0):
+            m = on.astype(np.int8)
+            edges = np.flatnonzero(np.diff(m)) + 1
+            bounds = np.concatenate([[0], edges, [len(m)]])
+            for i in range(len(bounds) - 1):
+                st, en = bounds[i], bounds[i + 1]
+                if not on[st] and st > 0 and en < len(on) and en - st <= gap:
+                    on[st:en] = True
         on_frac = on.mean()
         on_runs, off_runs = _runs(on)
         # Drop tiny glitches (<2 steps) when counting key-downs.

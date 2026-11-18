@@ -164,3 +164,36 @@ def agc(x: np.ndarray, attack_ms: float = 2, decay_ms: float = 250, target: floa
         env = a * env + (1 - a) * v if v > env else d * env + (1 - d) * v
         out[i] = x[i] * target / max(env * 3, target * 0.05, floor)
     return np.clip(out, -1, 1)
+
+
+def bandpass(x: np.ndarray, lo: float, hi: float, taps: int = 801) -> np.ndarray:
+    """Imitate the radio's IF filter (steep skirts, very quiet outside)."""
+    n = np.arange(taps) - (taps - 1) / 2
+    h = (2 * hi / FS) * np.sinc(2 * hi / FS * n) - (2 * lo / FS) * np.sinc(2 * lo / FS * n)
+    h *= np.blackman(taps)
+    return np.convolve(x, h, mode="same")
+
+
+def radio(x: np.ndarray, lo: float = 300, hi: float = 2700, decay_ms: float = 250) -> np.ndarray:
+    """Signal + band noise as heard through a real receiver: filter, then AGC,
+    then the tiny noise of the sound chip."""
+    y = agc(bandpass(x, lo, hi), decay_ms=decay_ms)
+    rng = np.random.default_rng(99)
+    return y + rng.normal(0, 3e-5, len(y))
+
+
+def cw_hard(seconds=15, freq=700, wpm=22, amp=0.6, text="CQ TEST DE KC8JXH "):
+    """CW with hard keying: square edges, so every dot and dash 'clicks'."""
+    dit = int(1.2 / wpm * FS)
+    gate = []
+    for ch in text * 10:
+        if ch == " ":
+            gate += [0] * (dit * 4)
+            continue
+        for sym in MORSE[ch]:
+            gate += [1] * (dit if sym == "." else 3 * dit) + [0] * dit
+        gate += [0] * (dit * 2)
+    n = int(seconds * FS)
+    gate = np.array(gate[:n] + [0] * max(0, n - len(gate)), float)
+    t = np.arange(n) / FS
+    return amp * gate * np.sin(2 * np.pi * freq * t)

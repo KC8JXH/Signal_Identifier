@@ -105,3 +105,38 @@ def test_other_modes_with_agc():
     assert modes(s.agc(s.voice() + noise())) == ["SSB voice"]
     assert modes(s.agc(s.ft8() + noise())) == ["FT8"]
     assert modes(s.agc(s.rtty() + noise())) == ["RTTY"]
+
+
+# ---- as heard through a real receiver: IF filter + AGC + sound-chip hiss
+
+@pytest.mark.parametrize("name,make,lo,hi", [
+    ("usb", lambda: s.cw(amp=0.6), 300, 2700),
+    ("usb very strong", lambda: s.cw(amp=5), 300, 2700),
+    ("usb hard keying", lambda: s.cw_hard(), 300, 2700),
+    ("usb hard keying very strong", lambda: s.cw_hard(amp=5), 300, 2700),
+    ("cw mode 500 Hz filter", lambda: s.cw(freq=600, amp=5), 350, 850),
+    ("cw mode 500 Hz hard keying", lambda: s.cw_hard(freq=600, amp=5), 350, 850),
+    ("cw mode 1.2 kHz filter", lambda: s.cw_hard(freq=600, amp=3), 100, 1300),
+    ("cw mode 250 Hz filter", lambda: s.cw(freq=600, amp=3), 475, 725),
+])
+def test_strong_cw_through_receiver_is_cw(name, make, lo, hi):
+    assert modes(s.radio(make() + noise(), lo=lo, hi=hi)) == ["CW"], name
+
+
+def test_cw_through_receiver_fast_agc():
+    assert modes(s.radio(s.cw(amp=3) + noise(), decay_ms=60)) == ["CW"]
+
+
+@pytest.mark.parametrize("make,expect", [
+    (lambda: s.voice(), "SSB voice"),
+    (lambda: s.voice(seed=10), "SSB voice"),
+    (lambda: s.ft8(), "FT8"),
+    (lambda: s.rtty(), "RTTY"),
+    (lambda: s.psk31(), "PSK31"),
+])
+def test_other_modes_through_receiver(make, expect):
+    assert modes(s.radio(make() + noise())) == [expect]
+
+
+def test_receiver_noise_only():
+    assert modes(s.radio(noise())) == []
