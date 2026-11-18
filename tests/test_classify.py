@@ -161,3 +161,16 @@ def test_two_data_links_at_once():
     x = s.radio(s.ardop_4fsk(centre=1430) + s.ofdm_data(centre=2180) + noise())
     m = [d for d in analyze(x, s.FS).detections if d.mode == "Data bursts"]
     assert len(m) == 2
+
+
+def test_alternating_arq_blocks_are_not_voice():
+    """Shape of a real 20 m Winlink session: ~4 s data blocks (3 sub-bands) and
+    ~1.7 s acknowledgements (2 sub-bands), 0.6 s turnarounds, ~10 dB above noise."""
+    data = [(0.0, 4.1), (6.4, 4.1), (12.8, 2.2)]
+    acks = [(4.7, 1.7), (11.1, 1.7)]
+    x = (s.ofdm_data(centre=1100, width=140, amp=0.3, bursts=data, seed=1)
+         + s.ofdm_data(centre=1285, width=140, amp=0.3, bursts=data, seed=2)
+         + s.ofdm_data(centre=1470, width=140, amp=0.3, bursts=data, seed=3)
+         + s.ofdm_data(centre=1130, width=250, amp=0.4, bursts=acks, seed=4)
+         + s.ofdm_data(centre=1435, width=250, amp=0.4, bursts=acks, seed=5))
+    assert modes(s.radio(x + noise())) == ["Data bursts"]

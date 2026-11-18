@@ -156,8 +156,12 @@ class Analyzer:
             a0, b0 = inside[0][0], inside[-1][1]
             f0, f1 = self.fl[a0], self.fl[b0]
             if f1 - f0 >= 350:
-                # Wide data bursts (many carriers lit at once) can fool the voice test.
-                d = self._data_bursts(f0, f1, need_fill=True)
+                # Wide data bursts can fool the voice test - but don't let a busy
+                # FT8/FT4/CW stretch be swallowed as one "burst".
+                familiar = any(d.mode in self.KNOWN and d.confidence >= 0.7
+                               for d in self._narrow_all([c for c in inside
+                                                          if self.fl[c[1]] - self.fl[c[0]] < 350]))
+                d = None if familiar else self._data_bursts(f0, f1, need_fill=True)
                 if d is not None:
                     dets.append(d)
                     continue
@@ -243,9 +247,9 @@ class Analyzer:
         noise = min(noise, float(np.percentile(env, 8)) + 1.0)
         rel = env - noise
         peak = float(np.percentile(rel, 98))
-        if peak < 8:
+        if peak < 7:
             return None
-        on = rel > max(6.0, peak - 12.0)
+        on = rel > max(5.0, peak - 12.0)
         # bridge short dropouts (< 60 ms), then drop blips (< 0.2 s)
         on = self._bridge(on, int(0.06 / self.dt_s))
         runs_on, _ = _runs(on)
@@ -259,7 +263,8 @@ class Analyzer:
         inside = rel[on]
         if len(inside) < 20 or np.std(inside) > 4.5:
             return None   # level jumps around while on: speech, not data
-        if np.median(inside) < 7:
+        steady = np.std(inside) <= 2.5 and blocks.max() >= 0.8 and np.median(inside) >= 6
+        if np.median(inside) < 7 and not steady:
             return None   # too faint to judge
         # Where is the signal really? Average spectrum while it's on.
         a = int(np.searchsorted(self.fl, f_lo))
@@ -278,7 +283,9 @@ class Analyzer:
         # how much of the band is lit at once while on (multi-carrier modes fill it)
         sel = (self.fs_bins >= f_lo) & (self.fs_bins <= f_hi)
         lit = (self.S[:, sel] > self.floor_s[sel] + 6)[on].mean() if sel.any() else 0
-        if need_fill and lit < 0.5:
+        # Before the voice test: either many carriers lit at once, or a level so
+        # steady while on (< 2.5 dB spread) that it can't be speech.
+        if need_fill and lit < 0.5 and not steady:
             return None
         # tone layout, for the detail text
         peaks, spacing = self._tone_layout(a, b)
