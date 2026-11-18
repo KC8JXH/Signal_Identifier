@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
+from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 import numpy as np
 
+from . import radio as R
 from .classify import F_HI, analyze
 
 WINDOW_SECONDS = 15.0   # how much recent audio each analysis looks at
 ANALYSE_EVERY_MS = 1000
-WF_W, WF_H = 720, 260   # waterfall size in pixels
+AXIS_H = 40             # space above the waterfall for the scale and labels
+RESULT_LINES = 6        # fixed number of result lines, so the window never jumps
+SETTINGS_FILE = Path.home() / ".signal_identifier.json"
 
 MODE_INFO = {
     "CW": ("Morse code", "#2b7de9"),
@@ -152,16 +157,31 @@ def _colormap(v: np.ndarray) -> np.ndarray:
     return (stops[i] * (1 - f) + stops[i + 1] * f).astype(np.uint8)
 
 
-def waterfall_ppm(spec_db: np.ndarray, noise_db: np.ndarray, freqs: np.ndarray) -> bytes:
+def waterfall_ppm(spec_db: np.ndarray, noise_db: np.ndarray, freqs: np.ndarray,
+                  width: int, height: int) -> bytes:
     """Turn a spectrogram into PPM image bytes (newest audio at the top)."""
     rel = spec_db - noise_db[None, :]
     v = (rel + 3) / 30.0
-    cols = np.linspace(0, F_HI, WF_W)
+    cols = np.linspace(0, F_HI, width)
     idx = np.clip(np.searchsorted(freqs, cols), 0, len(freqs) - 1)
     v = v[:, idx]
-    rows = np.linspace(0, len(v) - 1, WF_H).astype(int)[::-1]
+    rows = np.linspace(0, len(v) - 1, height).astype(int)[::-1]
     rgb = _colormap(v[rows])
-    return f"P6 {WF_W} {WF_H} 255 ".encode() + rgb.tobytes()
+    return f"P6 {width} {height} 255 ".encode() + rgb.tobytes()
+
+
+def load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def save_settings(d: dict) -> None:
+    try:
+        SETTINGS_FILE.write_text(json.dumps(d, indent=2))
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- window
@@ -170,53 +190,88 @@ class App:
     def __init__(self, root: tk.Tk, demo: bool = False):
         self.root = root
         self.source = None
+        self.radio = None
+        self.last_result = None
+        self.settings = load_settings()
         root.title("Signal Identifier")
-        root.minsize(760, 560)
 
-        top = ttk.Frame(root, padding=8)
+        # Fixed starting size (wide waterfall), never resized by the program itself.
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        w, h = min(1280, sw - 40), min(820, sh - 80)
+        root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
+        root.minsize(800, 600)
+
+        # -- row 1: sound input
+        top = ttk.Frame(root, padding=(8, 8, 8, 2))
         top.pack(fill="x")
-        ttk.Label(top, text="Sound input:").pack(side="left")
-        self.device_var = tk.StringVar()
-        self.device_box = ttk.Combobox(top, textvariable=self.device_var, width=48, state="readonly")
+        ttk.Label(top, text="Sound input:", width=12).pack(side="left")
+        self.device_box = ttk.Combobox(top, width=52, state="readonly")
         self.device_box.pack(side="left", padx=6)
         self.start_btn = ttk.Button(top, text="Start listening", command=self.toggle)
         self.start_btn.pack(side="left")
         ttk.Button(top, text="Demo", command=self.start_demo).pack(side="left", padx=6)
 
-        self.status = ttk.Label(root, text="Pick the sound input your radio is plugged into, then press Start listening.",
-                                padding=(8, 0))
-        self.status.pack(fill="x")
+        # -- row 2: radio (CAT) connection
+        rrow = ttk.Frame(root, padding=(8, 2))
+        rrow.pack(fill="x")
+        ttk.Label(rrow, text="Radio:", width=12).pack(side="left")
+        self.radio_box = ttk.Combobox(rrow, values=list(R.RADIOS), width=30, state="readonly")
+        self.radio_box.pack(side="left", padx=6)
+        self.radio_box.bind("<<ComboboxSelected>>", self._radio_changed)
+        ttk.Label(rrow, text="Port:").pack(side="left")
+        self.port_box = ttk.Combobox(rrow, width=34, state="readonly")
+        self.port_box.pack(side="left", padx=4)
+        ttk.Button(rrow, text="↻", width=3, command=self._fill_ports).pack(side="left")
+        ttk.Label(rrow, text="Speed:").pack(side="left", padx=(8, 0))
+        self.baud_box = ttk.Combobox(rrow, values=[str(b) for b in R.BAUD_RATES], width=8, state="readonly")
+        self.baud_box.pack(side="left", padx=4)
+        self.radio_btn = ttk.Button(rrow, text="Connect radio", command=self.toggle_radio)
+        self.radio_btn.pack(side="left", padx=6)
 
-        lvl = ttk.Frame(root, padding=(8, 4))
+        # -- status + level
+        self.status = ttk.Label(root, text="Pick the sound input your radio is plugged into, then press Start listening.",
+                                padding=(8, 2))
+        self.status.pack(fill="x")
+        lvl = ttk.Frame(root, padding=(8, 2))
         lvl.pack(fill="x")
-        ttk.Label(lvl, text="Audio level:").pack(side="left")
+        ttk.Label(lvl, text="Audio level:", width=12).pack(side="left")
         self.level = ttk.Progressbar(lvl, length=220, maximum=100)
         self.level.pack(side="left", padx=6)
-        self.level_text = ttk.Label(lvl, text="")
+        self.level_text = ttk.Label(lvl, text="", width=40)
         self.level_text.pack(side="left")
 
-        self.results = tk.Frame(root, padx=8, pady=6)
-        self.results.pack(fill="x")
-        self.big = tk.Label(self.results, text="Not listening", font=("Segoe UI", 22, "bold"), anchor="w")
+        # -- radio readout + main answer (fixed heights)
+        head = tk.Frame(root, padx=8, pady=4)
+        head.pack(fill="x")
+        self.radio_lbl = tk.Label(head, text="Radio: not connected", font=("Segoe UI", 14), anchor="w", fg="#555")
+        self.radio_lbl.pack(fill="x")
+        self.big = tk.Label(head, text="Not listening", font=("Segoe UI", 22, "bold"), anchor="w")
         self.big.pack(fill="x")
-        self.listbox = tk.Frame(self.results)
-        self.listbox.pack(fill="x")
+        self.lines = []
+        for _ in range(RESULT_LINES):
+            lab = tk.Label(head, text="", anchor="w", font=("Segoe UI", 11))
+            lab.pack(fill="x")
+            self.lines.append(lab)
 
-        wf = ttk.Frame(root, padding=8)
+        # -- waterfall fills the rest of the window
+        wf = tk.Frame(root, padx=8, pady=8)
         wf.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(wf, width=WF_W, height=WF_H + 40, bg="#000010", highlightthickness=0)
-        self.canvas.pack()
+        self.canvas = tk.Canvas(wf, bg="#000010", highlightthickness=0, width=10, height=10)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda e: self._redraw())
         self.wf_image = None
-        self._draw_axis()
 
         self._fill_devices()
+        self._fill_ports()
+        self._restore_radio_settings()
         root.protocol("WM_DELETE_WINDOW", self.quit)
         root.after(ANALYSE_EVERY_MS, self.tick)
         root.after(100, self.level_tick)
+        root.after(300, self.radio_tick)
         if demo:
             root.after(200, self.start_demo)
 
-    # -- devices ---------------------------------------------------------------
+    # -- sound devices ---------------------------------------------------------
 
     def _fill_devices(self):
         self.devices = []
@@ -230,13 +285,105 @@ class App:
                     self.devices.append((i, f"{d['name']}  [{api}]"))
             names = [n for _, n in self.devices]
             self.device_box["values"] = names
-            pick = next((k for k, (i, _) in enumerate(self.devices) if i == default_in), 0)
-            if names:
-                self.device_box.current(pick)
+            saved = self.settings.get("sound_input")
+            if saved in names:
+                self.device_box.set(saved)
+            elif names:
+                pick = next((k for k, (i, _) in enumerate(self.devices) if i == default_in), 0)
+                # Prefer a radio's built-in USB sound card if there is one.
+                usb = next((k for k, n in enumerate(names) if "USB Audio CODEC" in n and "MME" in n), None)
+                self.device_box.current(usb if usb is not None else pick)
             else:
                 self.status.config(text="No sound inputs found. Is your radio's USB cable or sound card plugged in?")
         except Exception as e:  # sounddevice missing or no audio system
             self.status.config(text=f"Can't see any sound inputs ({e}). You can still try the Demo.")
+
+    # -- radio ---------------------------------------------------------------------
+
+    def _fill_ports(self):
+        self.ports = R.list_serial_ports()
+        labels = [desc if dev in desc else f"{dev}  {desc}" for dev, desc in self.ports]
+        self.port_box["values"] = labels or ["(no COM ports found)"]
+        saved = self.settings.get("radio_port")
+        k = next((i for i, (dev, _) in enumerate(self.ports) if dev == saved), None)
+        if k is None:
+            # The IC-7300 shows up as a Silicon Labs CP210x port.
+            k = next((i for i, (_, d) in enumerate(self.ports) if "CP210" in d or "Silicon Labs" in d), 0)
+        if labels:
+            self.port_box.current(k)
+        else:
+            self.port_box.current(0)
+
+    def _restore_radio_settings(self):
+        name = self.settings.get("radio", "Icom IC-7300")
+        if name not in R.RADIOS:
+            name = "Icom IC-7300"
+        self.radio_box.set(name)
+        self._radio_changed(keep_baud=True)
+        if self.settings.get("radio_autoconnect") and R.RADIOS[name][0] != "none":
+            self.root.after(500, self.toggle_radio)
+
+    def _radio_changed(self, event=None, keep_baud=False):
+        proto, baud = R.RADIOS[self.radio_box.get()]
+        serial_needed = proto not in R.NETWORK_PROTOCOLS and proto != "none"
+        state = "readonly" if serial_needed else "disabled"
+        self.port_box.config(state=state)
+        self.baud_box.config(state=state)
+        saved = self.settings.get("radio_baud") if keep_baud else None
+        self.baud_box.set(str(saved or baud) if serial_needed else "")
+
+    def toggle_radio(self):
+        if self.radio is not None:
+            self.radio.stop()
+            self.radio = None
+            self.radio_btn.config(text="Connect radio")
+            self.radio_lbl.config(text="Radio: not connected", fg="#555")
+            self.settings["radio_autoconnect"] = False
+            save_settings(self.settings)
+            return
+        name = self.radio_box.get()
+        proto, _ = R.RADIOS[name]
+        if proto == "none":
+            return
+        port = ""
+        if proto not in R.NETWORK_PROTOCOLS:
+            k = self.port_box.current()
+            if not self.ports or k < 0:
+                messagebox.showinfo("Signal Identifier",
+                                    "No COM port found for the radio.\n\nFor an IC-7300: plug in the USB cable, "
+                                    "turn the radio on, and install Icom's USB driver if Windows "
+                                    "doesn't recognise it. Then press ↻.")
+                return
+            port = self.ports[k][0]
+        try:
+            baud = int(self.baud_box.get() or 0)
+            protocol, sp = R.make_protocol(name, port, baud)
+        except Exception as e:
+            hint = ("\n\nIf WSJT-X or another program is using the radio, close it, or choose "
+                    "'flrig' as the radio here so both can share it.")
+            messagebox.showerror("Signal Identifier", f"Couldn't open the radio on {port}:\n\n{e}{hint}")
+            return
+        self.radio = R.RadioPoller(protocol, sp)
+        self.radio_btn.config(text="Disconnect radio")
+        self.radio_lbl.config(text="Radio: connecting…", fg="#555")
+        self.settings.update(radio=name, radio_port=port, radio_baud=self.baud_box.get(),
+                             radio_autoconnect=True)
+        save_settings(self.settings)
+
+    def radio_tick(self):
+        if self.radio is not None:
+            st = self.radio.get()
+            if st.ok:
+                self.radio_lbl.config(text=f"Radio: {st.freq_text()}   {st.mode}", fg="black")
+            else:
+                self.radio_lbl.config(text=f"Radio: {st.message}", fg="#c92a2a")
+        self.root.after(500, self.radio_tick)
+
+    def _radio_state(self):
+        if self.radio is None:
+            return None
+        st = self.radio.get()
+        return st if st.ok else None
 
     # -- start / stop ------------------------------------------------------------
 
@@ -257,6 +404,8 @@ class App:
                                  "Try another entry in the list (the same device often appears "
                                  "several times; the [MME] one usually works).")
             return
+        self.settings["sound_input"] = self.devices[k][1]
+        save_settings(self.settings)
         self.start_btn.config(text="Stop")
         self.status.config(text=f"Listening to {self.devices[k][1]}. Results appear after a few seconds.")
         self.big.config(text="Listening…", fg="black")
@@ -272,12 +421,16 @@ class App:
         if self.source is not None:
             self.source.stop()
         self.source = None
+        self.last_result = None
         self.start_btn.config(text="Start listening")
         self.big.config(text="Not listening", fg="black")
         self._show([])
+        self.canvas.delete("wf")
 
     def quit(self):
         self.stop()
+        if self.radio is not None:
+            self.radio.stop()
         self.root.destroy()
 
     # -- updates -------------------------------------------------------------------
@@ -305,62 +458,84 @@ class App:
                 audio = self.source.ring.snapshot()
                 secs = len(audio) / self.source.rate
                 if secs >= 3:
-                    result = analyze(audio, self.source.rate)
-                    self._draw_waterfall(result)
-                    self._show(result.detections, secs)
+                    self.last_result = analyze(audio, self.source.rate)
+                    self._redraw()
+                    self._show(self.last_result.detections, secs)
                 else:
                     self.big.config(text=f"Listening… ({secs:.0f} s)")
         except Exception as e:
             self.status.config(text=f"Problem analysing audio: {e}")
         self.root.after(ANALYSE_EVERY_MS, self.tick)
 
+    def _describe(self, d, st) -> str:
+        rf = R.rf_frequency(st.freq_hz, st.mode, d.freq_hz) if st else None
+        if rf:
+            s = f"{d.mode} at {R.format_mhz(rf)}"
+            if d.detail:
+                s += f" ({d.detail})"
+            return s
+        return d.describe()
+
     def _show(self, dets, secs: float = 0):
-        for w in self.listbox.winfo_children():
-            w.destroy()
-        if self.source is None:
-            self.canvas.delete("marker")
-            return
+        for lab in self.lines:
+            lab.config(text="")
         self.canvas.delete("marker")
+        if self.source is None:
+            return
         if not dets:
             self.big.config(text="Nothing heard (just noise)", fg="#555")
             return
+        st = self._radio_state()
         best = max(dets, key=lambda d: d.confidence * (1 + d.strength_db / 30))
-        self.big.config(text=best.describe(), fg=MODE_INFO.get(best.mode, ("", "black"))[1])
+        self.big.config(text=self._describe(best, st), fg=MODE_INFO.get(best.mode, ("", "black"))[1])
         ranked = sorted(dets, key=lambda d: -d.confidence)
-        MAX_LINES = 6
-        for n, d in enumerate(ranked):
+        n_show = RESULT_LINES - 1 if len(ranked) > RESULT_LINES else RESULT_LINES
+        for lab, d in zip(self.lines, ranked[:n_show]):
             info, colour = MODE_INFO.get(d.mode, ("", "black"))
-            if n < MAX_LINES:
-                sure = "very likely" if d.confidence >= 0.8 else "likely" if d.confidence >= 0.6 else "maybe"
-                line = f"• {d.describe()}: {info} [{sure}]"
-                tk.Label(self.listbox, text=line, fg=colour, anchor="w",
-                         font=("Segoe UI", 11)).pack(fill="x")
-            elif n == MAX_LINES:
-                tk.Label(self.listbox, text=f"… and {len(ranked) - MAX_LINES} more (see the labels on the waterfall)",
-                         fg="#555", anchor="w", font=("Segoe UI", 11)).pack(fill="x")
-            x = d.freq_hz / F_HI * WF_W
+            sure = "very likely" if d.confidence >= 0.8 else "likely" if d.confidence >= 0.6 else "maybe"
+            audio = f", {d.freq_hz:,.0f} Hz audio" if st and R.rf_frequency(st.freq_hz, st.mode, d.freq_hz) else ""
+            lab.config(text=f"• {self._describe(d, st)}: {info} [{sure}{audio}]", fg=colour)
+        if len(ranked) > RESULT_LINES:
+            self.lines[-1].config(text=f"… and {len(ranked) - n_show} more (see the labels on the waterfall)",
+                                  fg="#555")
+        elif secs and secs < 12:
+            self.lines[-1].config(text="(Still gathering audio; FT8 is clearest after 15 seconds.)", fg="#777")
+        self._draw_markers(dets)
+
+    # -- waterfall ---------------------------------------------------------------
+
+    def _size(self):
+        return max(100, self.canvas.winfo_width()), max(AXIS_H + 50, self.canvas.winfo_height())
+
+    def _redraw(self):
+        self.canvas.delete("axis")
+        w, h = self._size()
+        for f in range(0, int(F_HI) + 1, 250):
+            x = f / F_HI * w
+            major = f % 500 == 0
+            self.canvas.create_line(x, 0, x, 8 if major else 4, fill="#aaa", tags="axis")
+            if major:
+                self.canvas.create_text(min(max(x, 14), w - 20), 15, text=f"{f} Hz" if f == 0 else f"{f}",
+                                        fill="#ccc", font=("Segoe UI", 8), tags="axis")
+        if self.last_result is not None and self.last_result.spectrogram_db is not None and self.source is not None:
+            r = self.last_result
+            ppm = waterfall_ppm(r.spectrogram_db, r.noise_db, r.freqs_hz, w, h - AXIS_H)
+            img = tk.PhotoImage(data=ppm, format="PPM")
+            self.wf_image = img  # keep a reference so Tk doesn't discard it
+            self.canvas.delete("wf")
+            self.canvas.create_image(0, AXIS_H, image=img, anchor="nw", tags="wf")
+            self._draw_markers(r.detections)
+
+    def _draw_markers(self, dets):
+        self.canvas.delete("marker")
+        if self.source is None:
+            return
+        w, _ = self._size()
+        for d in dets:
+            colour = MODE_INFO.get(d.mode, ("", "white"))[1]
+            x = d.freq_hz / F_HI * w
             self.canvas.create_text(x, 30, text=d.mode, fill=colour, font=("Segoe UI", 10, "bold"),
                                     tags="marker")
-        if secs and secs < 12:
-            tk.Label(self.listbox, text="(Still gathering audio; FT8 is clearest after 15 seconds.)",
-                     fg="#777", anchor="w").pack(fill="x")
-
-    def _draw_axis(self):
-        for f in range(0, int(F_HI) + 1, 500):
-            x = f / F_HI * WF_W
-            self.canvas.create_line(x, 0, x, 8, fill="#aaa")
-            self.canvas.create_text(min(max(x, 14), WF_W - 20), 15, text=f"{f}", fill="#ccc",
-                                    font=("Segoe UI", 8))
-
-    def _draw_waterfall(self, result):
-        if result.spectrogram_db is None:
-            return
-        ppm = waterfall_ppm(result.spectrogram_db, result.noise_db, result.freqs_hz)
-        img = tk.PhotoImage(data=ppm, format="PPM")
-        self.wf_image = img  # keep a reference so Tk doesn't discard it
-        self.canvas.delete("wf")
-        self.canvas.create_image(0, 40, image=img, anchor="nw", tags="wf")
-        self.canvas.tag_raise("marker")
 
 
 def main(demo: bool = False):

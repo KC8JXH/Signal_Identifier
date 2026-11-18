@@ -40,6 +40,36 @@ carrier, or just noise. It shows a live waterfall with each signal labelled.
 Results update every second, based on the last 15 seconds of audio. FT8 is
 easiest to recognise after a full 15-second cycle.
 
+## Showing the radio's frequency (IC-7300 and others)
+
+The program can read the dial frequency and mode from your radio. With that,
+each signal is shown at its real on-air frequency, e.g. **FT8 at
+14.075.223 MHz**. It only *reads* from the radio and never changes anything.
+
+**IC-7300, step by step**
+
+1. Connect the radio to the computer with the USB cable and turn the radio on.
+   (If Windows doesn't recognise it, install the **Icom USB driver** from
+   Icom's website.)
+2. In the **Radio** list choose **Icom IC-7300**.
+3. In **Port**, pick the entry that says **Silicon Labs CP210x … (COMx)**
+   (it's usually picked for you). Press **↻** if the list is empty.
+4. Leave **Speed** at **115200**. On the radio, **MENU → SET → Connectors →
+   CI-V → CI-V USB Baud Rate** should be **115200** or **Auto**.
+5. Press **Connect radio**. The frequency and mode appear above the results.
+   Next time it reconnects automatically.
+
+Also supported: other Icoms (IC-705, IC-7610, IC-9700, IC-7100, …), Yaesu
+(FT-991A, FT-891, FT-710, FTDX10/101, FT-817/818/857/897), Kenwood and
+Elecraft. Set **Speed** to match the CAT rate set in your radio's menu.
+
+**Using WSJT-X at the same time?** Only one program can use the radio's COM
+port at once. To share it, run **flrig** (free), point both WSJT-X and this
+program at it (choose **flrig** in the Radio list), or use **Hamlib rigctld**.
+
+On-air frequencies are worked out for USB, LSB and data modes (USB-D, etc.).
+In CW, AM or FM mode the audio frequency is shown instead.
+
 ## Good to know
 
 - This **identifies** the mode; it doesn't decode the text. To read the

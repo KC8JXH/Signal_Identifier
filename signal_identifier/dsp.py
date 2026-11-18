@@ -58,3 +58,22 @@ def noise_floor_db(spec_db: np.ndarray, smooth_bins: int) -> np.ndarray:
     # still works when a signal is present 90% of the time.
     mean_est = p5 + 12.9
     return running_median(mean_est, smooth_bins)
+
+
+def undo_agc(spec_db: np.ndarray, freqs: np.ndarray, f_lo: float = 150, f_hi: float = 3500) -> np.ndarray:
+    """Cancel the receiver's AGC "pumping".
+
+    When a strong signal keys down, the radio's AGC turns the whole audio band
+    down, and the background noise comes back up between dots and dashes. That
+    makes everything flicker in step with the strong signal, which can look
+    like speech. Here we track the background level in each moment (a low
+    percentile across the band, so signals barely affect it) and remove its
+    ups and downs.
+    """
+    band = (freqs >= f_lo) & (freqs <= f_hi)
+    if band.sum() < 8 or len(spec_db) < 3:
+        return spec_db
+    bg = np.percentile(spec_db[:, band], 25, axis=1)
+    k = 3
+    bg = np.convolve(np.pad(bg, k // 2, mode="edge"), np.ones(k) / k, mode="valid")
+    return spec_db - (bg - np.median(bg))[:, None]

@@ -85,3 +85,23 @@ def test_48khz_sound_card():
 def test_short_audio():
     assert modes(s.cw(seconds=5) + noise(5)) == ["CW"]
     assert modes(noise(1)) == []
+
+
+# ---- real receivers have AGC, which makes the background "pump" with strong signals
+
+@pytest.mark.parametrize("amp,decay", [(0.3, 250), (0.8, 250), (0.6, 60), (0.6, 800)])
+def test_cw_with_agc_is_not_voice(amp, decay):
+    assert modes(s.agc(s.cw(amp=amp) + noise(), decay_ms=decay)) == ["CW"]
+
+
+def test_several_cw_stations_not_rtty():
+    x = (s.cw(amp=0.3) + s.cw(freq=1100, wpm=25, amp=0.2, text="TEST DE W1AW K ")
+         + s.cw(freq=450, wpm=14, amp=0.15, text="QRZ DE N8XX ") + noise())
+    assert modes(x) == ["CW", "CW", "CW"]
+    assert modes(s.agc(s.cw(amp=0.5) + s.cw(freq=1100, wpm=25, amp=0.2) + noise())) == ["CW", "CW"]
+
+
+def test_other_modes_with_agc():
+    assert modes(s.agc(s.voice() + noise())) == ["SSB voice"]
+    assert modes(s.agc(s.ft8() + noise())) == ["FT8"]
+    assert modes(s.agc(s.rtty() + noise())) == ["RTTY"]

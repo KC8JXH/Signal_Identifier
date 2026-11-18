@@ -98,7 +98,6 @@ def psk31(seconds=15, freq=1000, amp=0.3, seed=4):
     sps = int(FS / baud)
     n = nsym * sps
     t = np.arange(n) / FS
-    amp_env = np.ones(n)
     sign = np.where(phase == 0, 1.0, -1.0)
     bb = np.repeat(sign, sps)
     # raised-cosine transition at each reversal: amplitude goes through zero
@@ -148,3 +147,20 @@ def voice(seconds=15, amp=0.3, seed=5):
     gate = np.convolve(gate, np.hanning(300) / np.hanning(300).sum(), mode="same")
     sig = sig * gate
     return amp * sig / (np.abs(sig).max() + 1e-9)
+
+
+def agc(x: np.ndarray, attack_ms: float = 2, decay_ms: float = 250, target: float = 0.3) -> np.ndarray:
+    """Imitate a receiver's AGC: loud signals turn the whole band's volume down,
+    and the background noise comes back up between them."""
+    a = np.exp(-1 / (attack_ms / 1000 * FS))
+    d = np.exp(-1 / (decay_ms / 1000 * FS))
+    env = 0.0
+    out = np.empty_like(x)
+    floor = 1e-3
+    # simple peak follower; loop in blocks for speed
+    absx = np.abs(x)
+    for i in range(len(x)):
+        v = absx[i]
+        env = a * env + (1 - a) * v if v > env else d * env + (1 - d) * v
+        out[i] = x[i] * target / max(env * 3, target * 0.05, floor)
+    return np.clip(out, -1, 1)

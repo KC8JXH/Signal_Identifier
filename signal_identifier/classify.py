@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .dsp import decimate, noise_floor_db, stft_db
+from .dsp import decimate, noise_floor_db, stft_db, undo_agc
 
 F_LO, F_HI = 150.0, 3500.0
 DEBUG = False  # the part of the audio we look at (SSB passband)
@@ -97,8 +97,8 @@ class Analyzer:
         # Long FFT: ~5.9 Hz resolution, good for telling tones apart (FT8, RTTY).
         self.nfft_l = int(2 ** round(np.log2(fs / 5.86)))
         self.hop_l = self.nfft_l // 8
-        self.L = stft_db(x, self.nfft_l, self.hop_l)
         self.fl = np.fft.rfftfreq(self.nfft_l, 1 / fs)
+        self.L = undo_agc(stft_db(x, self.nfft_l, self.hop_l), self.fl)
         self.dt_l = self.hop_l / fs
         self.floor_l = noise_floor_db(self.L, smooth_bins=round(300 / (fs / self.nfft_l)))
         self.act_l = self.L > self.floor_l + 7.0
@@ -106,8 +106,8 @@ class Analyzer:
         # Short FFT: ~5 ms steps, good for keying and loudness changes (CW, voice).
         self.nfft_s = int(2 ** round(np.log2(fs / 47)))
         self.hop_s = self.nfft_s // 4
-        self.S = stft_db(x, self.nfft_s, self.hop_s)
         self.fs_bins = np.fft.rfftfreq(self.nfft_s, 1 / fs)
+        self.S = undo_agc(stft_db(x, self.nfft_s, self.hop_s), self.fs_bins)
         self.dt_s = self.hop_s / fs
         self.floor_s = noise_floor_db(self.S, smooth_bins=7)
 
@@ -317,6 +317,8 @@ class Analyzer:
                 either = (oni | onj).sum()
                 if either == 0 or both / either < 0.4:
                     continue
+                if not self._always_one_on(ci, cj):
+                    continue
                 used.update((i, j))
                 lo, hi = sorted((ci, cj))
                 conf = 0.85 if std == 170 else 0.7
@@ -363,6 +365,22 @@ class Analyzer:
         if act.sum() == 0:
             return act
         return act & (pk >= np.percentile(pk[act], 90) - 6)
+
+    def _always_one_on(self, f1: float, f2: float) -> bool:
+        """RTTY: while transmitting, one of the two tones is always on. Two
+        separate CW stations both go quiet in their gaps."""
+        ons = []
+        for f in (f1, f2):
+            env, noise = self.band_envelope(f - 20, f + 20)
+            rel = env - noise
+            peak = np.percentile(rel, 98)
+            ons.append(rel > max(6.0, peak - 12.0))
+        either = ons[0] | ons[1]
+        idx = np.flatnonzero(either)
+        if len(idx) < 10:
+            return False
+        span = either[idx[0]:idx[-1] + 1]
+        return span.mean() >= 0.85
 
     def _wander(self, a: int, b: int) -> float:
         """How far (Hz) the strongest point moves around inside the cluster."""
