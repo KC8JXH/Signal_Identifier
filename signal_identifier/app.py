@@ -13,10 +13,14 @@ import numpy as np
 
 from . import radio as R
 from .classify import F_HI, analyze
+from .bandplan import BAND_BUTTONS, band_button_for, band_target
+from .recorder import Recorder, elapsed_text
 from .widgets import BandScope, Waterfall, meter_fraction
 
+MODE_BUTTONS = ["LSB", "USB", "LSB-D", "USB-D", "CW", "RTTY", "AM", "FM"]
+BTN_BG, BTN_ON = "#e9ecef", "#39c5ff"
+
 WINDOW_SECONDS = 15.0   # how much recent audio each analysis looks at
-KEEP_SECONDS = 60.0     # how much audio is kept for "Save recording"
 RECORDINGS_DIR = Path(__file__).resolve().parent.parent / "recordings"
 ANALYSE_EVERY_MS = 1000
 SETTINGS_FILE = Path.home() / ".signal_identifier.json"
@@ -45,9 +49,15 @@ class RingBuffer:
         self.filled = 0
         self.lock = threading.Lock()
         self.last_peak = 0.0
+        self.listeners = []   # e.g. a running recording
 
     def push(self, x: np.ndarray):
         x = np.asarray(x, dtype=np.float32).ravel()
+        for listener in list(self.listeners):
+            try:
+                listener(x)
+            except Exception:
+                pass
         with self.lock:
             n = len(x)
             if n >= len(self.buf):
@@ -73,7 +83,7 @@ class SoundCardSource:
         import sounddevice as sd  # imported here so the demo works without it
         info = sd.query_devices(device)
         self.rate = float(info["default_samplerate"])
-        self.ring = RingBuffer(KEEP_SECONDS, self.rate)
+        self.ring = RingBuffer(WINDOW_SECONDS, self.rate)
         self.stream = sd.InputStream(device=device, channels=1, samplerate=self.rate,
                                      callback=self._cb, blocksize=0)
         self.stream.start()
@@ -99,7 +109,7 @@ class DemoSource:
         from . import synth
         self.synth = synth
         self.rate = float(synth.FS)
-        self.ring = RingBuffer(KEEP_SECONDS, self.rate)
+        self.ring = RingBuffer(WINDOW_SECONDS, self.rate)
         self.running = True
         self.scene_name = ""
         threading.Thread(target=self._run, daemon=True).start()
@@ -168,22 +178,6 @@ def marker_text(d) -> str:
     return text if d.confidence >= 0.6 else text + "?"
 
 
-def write_wav(path: Path, audio: np.ndarray, rate: float) -> Path:
-    import wave
-    path.parent.mkdir(parents=True, exist_ok=True)
-    x = np.asarray(audio, dtype=np.float64)
-    peak = np.max(np.abs(x)) if len(x) else 0
-    if peak > 1:
-        x = x / peak
-    pcm = (np.clip(x, -1, 1) * 32767).astype("<i2")
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(int(round(rate)))
-        w.writeframes(pcm.tobytes())
-    return path
-
-
 def load_settings() -> dict:
     try:
         return json.loads(SETTINGS_FILE.read_text())
@@ -231,6 +225,16 @@ class App:
                                  bg="#0b0f14", fg="#39c5ff", anchor="e")
         self.lcd_mode.pack(fill="x")
 
+        # -- mode buttons, just left of the display
+        modes = tk.Frame(header)
+        modes.pack(side="right", anchor="n", pady=8)
+        self.mode_btns = {}
+        for i, m in enumerate(MODE_BUTTONS):
+            b = tk.Button(modes, text=m, width=6, relief="raised", bg=BTN_BG, font=("Segoe UI", 8, "bold"),
+                          padx=0, pady=0, command=lambda m=m: self._mode_click(m))
+            b.grid(row=i % 4, column=i // 4, padx=1, pady=1)
+            self.mode_btns[m] = b
+
         controls = tk.Frame(header)
         controls.pack(side="left", fill="x", expand=True)
 
@@ -238,27 +242,30 @@ class App:
         top = ttk.Frame(controls, padding=(8, 8, 8, 2))
         top.pack(fill="x")
         ttk.Label(top, text="Sound input:", width=12).pack(side="left")
-        self.device_box = ttk.Combobox(top, width=52, state="readonly")
+        self.device_box = ttk.Combobox(top, width=40, state="readonly")
         self.device_box.pack(side="left", padx=6)
         self.start_btn = ttk.Button(top, text="Start listening", command=self.toggle)
         self.start_btn.pack(side="left")
-        ttk.Button(top, text="Save recording", command=self.save_recording).pack(side="left", padx=6)
+        self.rec_btn = tk.Button(top, text="● Record", width=16, command=self.toggle_record,
+                                 bg=BTN_BG, fg="#c92a2a", font=("Segoe UI", 9, "bold"))
+        self.rec_btn.pack(side="left", padx=6)
+        self.recorder = None
 
         # -- row 2: radio (CAT) connection
         rrow = ttk.Frame(controls, padding=(8, 2))
         rrow.pack(fill="x")
         ttk.Label(rrow, text="Radio:", width=12).pack(side="left")
-        self.radio_box = ttk.Combobox(rrow, values=list(R.RADIOS), width=28, state="readonly")
+        self.radio_box = ttk.Combobox(rrow, values=list(R.RADIOS), width=24, state="readonly")
         self.radio_box.pack(side="left", padx=6)
         self.radio_box.bind("<<ComboboxSelected>>", self._radio_changed)
         ttk.Label(rrow, text="Port:").pack(side="left")
-        self.port_box = ttk.Combobox(rrow, width=26, state="readonly")
+        self.port_box = ttk.Combobox(rrow, width=20, state="readonly")
         self.port_box.pack(side="left", padx=4)
         ttk.Button(rrow, text="↻", width=3, command=self._fill_ports).pack(side="left")
         ttk.Label(rrow, text="Speed:").pack(side="left", padx=(8, 0))
         self.baud_box = ttk.Combobox(rrow, values=[str(b) for b in R.BAUD_RATES], width=8, state="readonly")
         self.baud_box.pack(side="left", padx=4)
-        self.radio_btn = ttk.Button(rrow, text="Connect radio", command=self.toggle_radio)
+        self.radio_btn = ttk.Button(rrow, text="Connect radio", width=15, command=self.toggle_radio)
         self.radio_btn.pack(side="left", padx=6)
 
         # -- row 3: status
@@ -270,12 +277,12 @@ class App:
         lvl = ttk.Frame(controls, padding=(8, 2, 8, 6))
         lvl.pack(fill="x")
         ttk.Label(lvl, text="Audio level:", width=12).pack(side="left")
-        self.level = ttk.Progressbar(lvl, length=200, maximum=100)
+        self.level = ttk.Progressbar(lvl, length=180, maximum=100)
         self.level.pack(side="left", padx=6)
-        self.level_text = ttk.Label(lvl, text="", width=26)
+        self.level_text = ttk.Label(lvl, text="", width=22)
         self.level_text.pack(side="left")
         ttk.Label(lvl, text="S-meter:").pack(side="left", padx=(12, 0))
-        self.smeter = ttk.Progressbar(lvl, length=200, maximum=100)
+        self.smeter = ttk.Progressbar(lvl, length=180, maximum=100)
         self.smeter.pack(side="left", padx=6)
         self.smeter_text = ttk.Label(lvl, text="", width=12)
         self.smeter_text.pack(side="left")
@@ -283,8 +290,16 @@ class App:
         # -- whole-band view
         bandbar = ttk.Frame(root, padding=(8, 2))
         bandbar.pack(fill="x")
-        self.band_title = ttk.Label(bandbar, text="Band scope", font=("Segoe UI", 9, "bold"), width=24)
+        self.band_title = ttk.Label(bandbar, text="Band scope", font=("Segoe UI", 9, "bold"), width=12)
         self.band_title.pack(side="left")
+        self.band_btns = {}
+        bb = tk.Frame(bandbar)
+        bb.pack(side="left", padx=(0, 6))
+        for name in BAND_BUTTONS:
+            b = tk.Button(bb, text=name, width=4, bg=BTN_BG, font=("Segoe UI", 9, "bold"),
+                          command=lambda n=name: self._band_button(n))
+            b.pack(side="left", padx=1)
+            self.band_btns[name] = b
         self.click_tune = tk.BooleanVar(value=self.settings.get("click_to_tune", True))
         ttk.Checkbutton(bandbar, text="Click a signal to tune the radio", variable=self.click_tune,
                         command=self._save_click_tune).pack(side="left", padx=12)
@@ -317,18 +332,17 @@ class App:
 
     def clock_tick(self):
         self.utc_lbl.config(text=time.strftime("%H:%M:%S UTC", time.gmtime()))
+        if self.recorder is not None:
+            self.rec_btn.config(text=f"■ Stop rec  {elapsed_text(self.recorder.seconds)}")
         self.root.after(250, self.clock_tick)
 
     def band_tick(self):
         try:
             st0 = self.radio.get() if self.radio is not None else None
-            band = None
-            if self.band.view:
-                from .bandplan import band_for
+            from .bandplan import band_for
+            band = band_for(st0.freq_hz) if st0 is not None and st0.ok else None
+            if band is None and self.band.view:
                 band = band_for(sum(self.band.view) / 2)
-            if band is None and st0 is not None and st0.ok:
-                from .bandplan import band_for
-                band = band_for(st0.freq_hz)
             self.band_title.config(text=f"{band[2]} band" if band else "Band scope")
             if self.radio is not None and self.radio.has_scope:
                 st = self.radio.get()
@@ -502,6 +516,7 @@ class App:
                 if st.cw_pitch and st.mode.upper().startswith("CW"):
                     self.lcd_mode.config(text=f"{st.mode}  pitch {st.cw_pitch:.0f}")
                 self._set_meter(st.smeter_db, "" if st.smeter_db is not None else "not available")
+                self._highlight(st)
                 self.wf.set_dial((st.freq_hz, st.mode, st.cw_pitch))
             else:
                 self.lcd_freq.config(text="--.---.--", fg="#4a5560")
@@ -514,7 +529,48 @@ class App:
             self.lcd_mode.config(text="no radio", fg="#8a96a3")
             self._set_meter(None, "no radio")
             self.wf.set_dial(None)
+            self._highlight(None)
         self.root.after(100, self.radio_tick)
+
+    def _highlight(self, st):
+        cur_mode = st.mode.upper() if st else ""
+        for m, b in self.mode_btns.items():
+            on = cur_mode == m or (m == "RTTY" and cur_mode in ("RTTY", "RTTY-L", "FSK")) \
+                or (m == "USB-D" and cur_mode in ("DATA-U", "PKTUSB", "DIG")) \
+                or (m == "LSB-D" and cur_mode in ("DATA-L", "PKTLSB")) \
+                or (m == "CW" and cur_mode in ("CW-U", "CW-R", "CW-L"))
+            b.config(bg=BTN_ON if on else BTN_BG)
+        cur_band = band_button_for(st.freq_hz) if st else None
+        for n, b in self.band_btns.items():
+            b.config(bg=BTN_ON if n == cur_band else BTN_BG)
+
+    def _mode_click(self, mode: str):
+        if self.radio is None:
+            self.status.config(text="Connect the radio first to change mode.")
+            return
+        self.radio.set_mode(mode)
+        self.status.config(text=f"Switching the radio to {mode}")
+
+    def _band_button(self, name: str):
+        if self.radio is None:
+            self.status.config(text="Connect the radio first to change band.")
+            return
+        st = self.radio.get()
+        if not st.ok:
+            self.status.config(text="The radio isn't answering, so it can't change band.")
+            return
+        memory = self.settings.setdefault("band_memory", {})
+        here = band_button_for(st.freq_hz)
+        if here:
+            memory[here] = [st.freq_hz, st.mode]   # remember where we were on this band
+        if here == name:
+            memory.pop(name, None)                  # pressing the current band again: go to its default spot
+        freq, mode = band_target(name, st.mode, memory)
+        save_settings(self.settings)
+        if mode != st.mode:
+            self.radio.set_mode(mode)
+        self.radio.tune(freq)
+        self.status.config(text=f"Going to {name} m: {R.format_freq(freq)} {mode}")
 
     def _set_meter(self, db, note: str):
         goal = meter_fraction(db) * 100
@@ -561,16 +617,18 @@ class App:
             return
         self.settings["sound_input"] = self.devices[k][1]
         save_settings(self.settings)
-        self.start_btn.config(text="Stop")
+        self.start_btn.config(text="Stop listening")
         self.status.config(text=f"Listening to {self.devices[k][1]}. Results appear after a few seconds.")
 
     def start_demo(self):
         self.stop()
         self.source = DemoSource()
-        self.start_btn.config(text="Stop")
+        self.start_btn.config(text="Stop listening")
         self.status.config(text="DEMO: playing made-up signals, changing every 20 seconds.")  # (python -m signal_identifier --demo)
 
     def stop(self):
+        if self.recorder is not None:
+            self.toggle_record()
         if self.source is not None:
             self.source.stop()
         self.source = None
@@ -627,32 +685,37 @@ class App:
 
     # -- recording -------------------------------------------------------------------
 
-    def save_recording(self):
-        """Save the last minute of audio as a WAV file (to study or share)."""
-        if self.source is None:
-            messagebox.showinfo("Signal Identifier", "Start listening first, then press Save recording.")
+    def toggle_record(self):
+        """Start recording the receiver audio to a WAV file, or stop and save it."""
+        if self.recorder is not None:
+            rec, self.recorder = self.recorder, None
+            if self.source is not None and rec.feed in self.source.ring.listeners:
+                self.source.ring.listeners.remove(rec.feed)
+            path = rec.stop()
+            self.rec_btn.config(text="● Record", bg=BTN_BG, fg="#c92a2a")
+            self.status.config(text=f"Saved {elapsed_text(rec.seconds)} of audio to {path}")
+            try:
+                import os
+                if hasattr(os, "startfile"):
+                    os.startfile(path.parent)  # open the folder in Windows Explorer
+            except Exception:
+                pass
             return
-        audio = self.source.ring.snapshot()
-        if len(audio) < self.source.rate:
-            messagebox.showinfo("Signal Identifier", "Not enough audio yet. Wait a few seconds and try again.")
+        if self.source is None:
+            messagebox.showinfo("Signal Identifier", "Start listening first, then press Record.")
             return
         st = self._radio_state()
-        name = time.strftime("%Y-%m-%d_%H%MZ", time.gmtime())
+        name = time.strftime("%Y-%m-%d_%H%M%SZ", time.gmtime())
         if st:
             name += f"_{int(round(st.freq_hz))}Hz_{st.mode.replace('/', '-')}"
         try:
-            path = write_wav(RECORDINGS_DIR / f"{name}.wav", audio, self.source.rate)
+            self.recorder = Recorder(RECORDINGS_DIR / f"{name}.wav", self.source.rate)
         except Exception as e:
-            messagebox.showerror("Signal Identifier", f"Couldn't save the recording:\n\n{e}")
+            messagebox.showerror("Signal Identifier", f"Couldn't start recording:\n\n{e}")
             return
-        secs = len(audio) / self.source.rate
-        self.status.config(text=f"Saved {secs:.0f} seconds of audio to {path}")
-        try:
-            import os
-            if hasattr(os, "startfile"):
-                os.startfile(path.parent)  # open the folder in Windows Explorer
-        except Exception:
-            pass
+        self.source.ring.listeners.append(self.recorder.feed)
+        self.rec_btn.config(text="■ Stop rec  0:00", bg="#c92a2a", fg="white")
+        self.status.config(text=f"Recording to {self.recorder.path.name}")
 
 
 def main(demo: bool = False):

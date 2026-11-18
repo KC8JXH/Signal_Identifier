@@ -66,7 +66,8 @@ def ic7300(freq=14074000, mode=0x01, data=1, echo=True, meter=120, pitch=128):
             reply += b"\xfe\xfe\xe0\x94\x15\x02" + bytes([meter // 100, ((meter // 10 % 10) << 4) | meter % 10]) + b"\xfd"
         elif c == 0x14 and cmd[5] == 0x09:
             reply += b"\xfe\xfe\xe0\x94\x14\x09" + bytes([pitch // 100, ((pitch // 10 % 10) << 4) | pitch % 10]) + b"\xfd"
-        elif c == 0x05 or (c == 0x27 and cmd[5] in (0x10, 0x11, 0x14, 0x15)):
+        elif c in (0x05, 0x06) or (c == 0x27 and cmd[5] in (0x10, 0x11, 0x14, 0x15)) \
+                or (c == 0x1A and cmd[5] == 0x06 and len(cmd) > 7):
             reply += b"\xfe\xfe\xe0\x94\xfb\xfd"
         elif c == 0x1A and cmd[5] == 0x06:
             reply += b"\xfe\xfe\xe0\x94\x1a\x06" + bytes([data, 1 if data else 0]) + b"\xfd"
@@ -273,3 +274,56 @@ def test_waterfall_click_round_trip():
     # RTTY: the radio shows mark; mark tone heard at 2125 Hz
     assert R.rf_frequency(14_085_000, "RTTY", 2125) == 14_085_000
     assert R.rf_frequency(14_085_000, "RTTY", 2295) == 14_084_830
+
+
+def test_set_mode_and_freq_commands():
+    fs = FakeSerial(ic7300())
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    assert proto.set_mode("USB-D")
+    assert b"\xfe\xfe\x94\xe0\x06\x01\xfd" in fs.written
+    assert b"\xfe\xfe\x94\xe0\x1a\x06\x01\x01\xfd" in fs.written
+    assert proto.set_mode("CW")
+    assert b"\xfe\xfe\x94\xe0\x06\x03\xfd" in fs.written
+    proto.close()
+
+    fs = FakeSerial(lambda c: b"")
+    k, _ = R.make_protocol("Kenwood TS-590 / TS-890 / TS-990", "COM5", serial_factory=lambda n, b: fs)
+    k.set_freq(7_074_000)
+    k.set_mode("LSB")
+    assert b"FA00007074000;" in fs.written and b"MD1;DA0;" in fs.written
+
+    fs = FakeSerial(lambda c: b"")
+    y, _ = R.make_protocol("Yaesu FT-991 / FT-991A", "COM6", serial_factory=lambda n, b: fs)
+    y.set_freq(14_074_000)
+    y.set_mode("USB-D")
+    assert b"FA014074000;" in fs.written and b"MD0C;" in fs.written
+
+    fs = FakeSerial(lambda c: b"")
+    o, _ = R.make_protocol("Yaesu FT-817 / 818 / 857 / 897", "COM7", serial_factory=lambda n, b: fs)
+    o.set_freq(14_074_000)
+    o.set_mode("CW")
+    assert bytes([0x01, 0x40, 0x74, 0x00, 0x01]) in fs.written and bytes([0x02, 0, 0, 0, 0x07]) in fs.written
+
+
+def test_band_buttons():
+    from signal_identifier.bandplan import band_button_for, band_target
+    assert band_target("20", "USB-D") == (14_074_000, "USB-D")
+    assert band_target("40", "USB") == (7_200_000, "LSB")
+    assert band_target("20", "LSB") == (14_250_000, "USB")
+    assert band_target("30", "LSB") == (10_136_000, "USB-D")   # no phone on 30 m
+    assert band_target("40", "CW") == (7_030_000, "CW")
+    assert band_target("40", "CW", {"40": (7_012_500, "CW")}) == (7_012_500, "CW")
+    assert band_button_for(14_074_000) == "20" and band_button_for(9_000_000) is None
+
+
+def test_recorder(tmp_path):
+    import numpy as np
+    from signal_identifier.recorder import Recorder, elapsed_text
+    from signal_identifier.__main__ import read_wav
+    r = Recorder(tmp_path / "rec" / "a.wav", 48000)
+    for _ in range(10):
+        r.feed(np.full(4800, 0.25, np.float32))
+    path = r.stop()
+    x, rate = read_wav(str(path))
+    assert rate == 48000 and len(x) == 48000 and abs(x.mean() - 0.25) < 0.01
+    assert elapsed_text(83) == "1:23"

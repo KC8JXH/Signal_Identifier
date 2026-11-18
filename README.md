@@ -51,9 +51,9 @@ With that you get:
 - the waterfall scale labelled in radio frequencies
 - on Icom radios, a **whole-band view** from the radio's own band scope (see below)
 
-It never transmits. The only thing it ever changes on the radio is the
-frequency, and only when you click the whole-band view with "Click to tune"
-switched on.
+It never transmits. The only things it ever changes on the radio are the
+frequency and mode, and only when you click a signal (with "Click a signal to
+tune the radio" ticked) or press a band or mode button.
 
 **IC-7300, step by step**
 
@@ -106,17 +106,30 @@ radios assume 600 Hz). In AM or FM mode the audio frequency is shown instead.
 The S-meter uses Icom's published scale for Icom radios and rigctld's
 calibrated reading. For other radios it's approximate.
 
-## Saving a recording
+## Recording
 
-Press **Save recording** to save the last minute of audio as a WAV file in the
-`recordings` folder (the folder opens automatically). The file name includes
-the time (UTC) and, if the radio is connected, its frequency and mode.
+Press **● Record** to start recording the receiver audio, and **■ Stop rec**
+to finish. The button shows how long you've been recording. The file goes in
+the `recordings` folder (the folder opens when you stop), named with the time
+(UTC) and, if the radio is connected, its frequency and mode.
 
 Recordings of signals the program gets wrong or can't identify are the best
 way to improve it. To share one, open this project on GitHub, click
 **Add file → Upload files**, drag the WAV file in and click **Commit changes**.
 
 You can also analyse a saved file: `python -m signal_identifier recordings\yourfile.wav`
+
+## Band and mode buttons
+
+With the radio connected:
+
+- **Band buttons** (160 … 6) above the band view change band. Each band
+  remembers where you last were. The first time, it goes to the FT8 frequency
+  if you're in a data mode (USB-D), the CW segment if you're in CW, or the
+  phone segment if you're in SSB (LSB below 10 MHz, USB above). Pressing the
+  band you're already on jumps back to that default spot.
+- **Mode buttons** (LSB, USB, LSB-D, USB-D, CW, RTTY, AM, FM), next to the
+  frequency display, change mode. The current band and mode are highlighted.
 
 ## About "ARQ data" labels
 

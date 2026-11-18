@@ -392,10 +392,25 @@ class IcomCIV(SerialProtocol):
                 return self._scope
         return None
 
-    # -- tuning (the only thing we ever change) ---------------------------------
+    # -- tuning: frequency and mode are the only things we ever change -------
 
     def set_freq(self, hz: float) -> bool:
         return self._set(b"\x05" + _bcd_le(int(round(hz))))
+
+    ICOM_SET = {"LSB": 0x00, "USB": 0x01, "AM": 0x02, "CW": 0x03, "RTTY": 0x04, "FM": 0x05,
+                "CW-R": 0x07, "RTTY-R": 0x08}
+
+    def set_mode(self, mode: str) -> bool:
+        data = mode.endswith("-D")
+        base = mode[:-2] if data else mode
+        code = self.ICOM_SET.get(base)
+        if code is None:
+            return False
+        ok = self._set(bytes([0x06, code]))
+        if base in ("USB", "LSB", "AM", "FM"):
+            # data mode on (with filter 1) or off
+            self._set(b"\x1a\x06" + (b"\x01\x01" if data else b"\x00\x00"))
+        return ok
 
     def close(self):
         if self.scope_enabled:
@@ -436,6 +451,24 @@ class AsciiCAT(SerialProtocol):
     def _complete(self, buf: bytes) -> bool:
         return True
 
+    FREQ_DIGITS = 11
+    SET_MODES: dict[str, str] = {}
+
+    def _write(self, text: str):
+        self.port.write(text.encode("ascii"))
+        time.sleep(0.05)
+
+    def set_freq(self, hz: float) -> bool:
+        self._write(f"FA{int(round(hz)):0{self.FREQ_DIGITS}d};")
+        return True
+
+    def set_mode(self, mode: str) -> bool:
+        cmd = self.SET_MODES.get(mode)
+        if cmd is None:
+            return False
+        self._write(cmd)
+        return True
+
     def read(self):
         f = self._cmd(b"FA;", b"FA")
         freq = float(int(f)) if f and f.isdigit() else None
@@ -448,6 +481,8 @@ class Kenwood(AsciiCAT):
     MODE_CMD = b"MD;"
     MODES = {"1": "LSB", "2": "USB", "3": "CW", "4": "FM", "5": "AM", "6": "FSK",
              "7": "CW-R", "9": "FSK-R"}
+    SET_MODES = {"LSB": "MD1;DA0;", "USB": "MD2;DA0;", "CW": "MD3;", "CW-R": "MD7;", "FM": "MD4;DA0;",
+                 "AM": "MD5;DA0;", "RTTY": "MD6;", "RTTY-R": "MD9;", "USB-D": "MD2;DA1;", "LSB-D": "MD1;DA1;"}
 
     def read_smeter(self):
         v = self._cmd(b"SM0;", b"SM0")
@@ -457,6 +492,9 @@ class Kenwood(AsciiCAT):
 
 
 class Elecraft(Kenwood):
+    SET_MODES = {"LSB": "MD1;", "USB": "MD2;", "CW": "MD3;", "CW-R": "MD7;", "FM": "MD4;", "AM": "MD5;",
+                 "RTTY": "MD6;DT1;", "RTTY-R": "MD9;DT1;", "USB-D": "MD6;DT0;", "LSB-D": "MD9;DT0;"}
+
     def read_smeter(self):
         v = self._cmd(b"SM;", b"SM")
         if not v or not v.isdigit():
@@ -469,6 +507,9 @@ class YaesuNew(AsciiCAT):
     MODES = {"1": "LSB", "2": "USB", "3": "CW-U", "4": "FM", "5": "AM", "6": "RTTY-L",
              "7": "CW-L", "8": "DATA-L", "9": "RTTY-U", "A": "DATA-FM", "B": "FM-N",
              "C": "DATA-U", "D": "AM-N", "E": "PSK", "F": "DATA-FM-N"}
+    FREQ_DIGITS = 9
+    SET_MODES = {"LSB": "MD01;", "USB": "MD02;", "CW": "MD03;", "CW-R": "MD07;", "FM": "MD04;",
+                 "AM": "MD05;", "RTTY": "MD06;", "RTTY-R": "MD09;", "USB-D": "MD0C;", "LSB-D": "MD08;"}
 
     def read_smeter(self):
         v = self._cmd(b"SM0;", b"SM0")
@@ -490,6 +531,25 @@ class YaesuOld(SerialProtocol):
         freq = _bcd_be_to_int(buf[:4]) * 10
         mode = self.MODES.get(buf[4], f"mode {buf[4]:02X}")
         return float(freq), mode
+
+    OLD_SET = {"LSB": 0x00, "USB": 0x01, "CW": 0x02, "CW-R": 0x03, "AM": 0x04, "FM": 0x08,
+               "USB-D": 0x0A, "LSB-D": 0x0A, "RTTY": 0x0A, "RTTY-R": 0x0A}
+
+    def set_freq(self, hz: float) -> bool:
+        tens = int(round(hz / 10))
+        digits = f"{tens:08d}"
+        bcd = bytes(int(digits[i]) << 4 | int(digits[i + 1]) for i in range(0, 8, 2))
+        self.port.write(bcd + b"\x01")
+        time.sleep(0.05)
+        return True
+
+    def set_mode(self, mode: str) -> bool:
+        code = self.OLD_SET.get(mode)
+        if code is None:
+            return False
+        self.port.write(bytes([code, 0, 0, 0, 0x07]))
+        time.sleep(0.05)
+        return True
 
     def read_smeter(self):
         buf = self._ask(bytes([0, 0, 0, 0, 0xE7]), until=b"", timeout=0.3, min_len=1)
@@ -517,6 +577,14 @@ class Flrig:
         f = self.proxy.rig.get_vfo()
         m = self.proxy.rig.get_mode()
         return float(f), str(m)
+
+    def set_freq(self, hz: float) -> bool:
+        self.proxy.rig.set_vfo(float(hz))
+        return True
+
+    def set_mode(self, mode: str) -> bool:
+        self.proxy.rig.set_mode(mode)
+        return True
 
     def read_smeter(self):
         try:
@@ -549,6 +617,20 @@ class Rigctld:
         if not f or f[0].startswith("RPRT"):
             raise IOError("rigctld reported an error: " + " ".join(f))
         return float(f[0]), (m[0] if m and not m[0].startswith("RPRT") else "")
+
+    HAMLIB_MODES = {"LSB": "LSB", "USB": "USB", "CW": "CW", "CW-R": "CWR", "AM": "AM", "FM": "FM",
+                    "RTTY": "RTTY", "RTTY-R": "RTTYR", "USB-D": "PKTUSB", "LSB-D": "PKTLSB"}
+
+    def set_freq(self, hz: float) -> bool:
+        r = self._query(f"F {int(round(hz))}")
+        return not r or r[-1] == "RPRT" or r[-1] == "0"
+
+    def set_mode(self, mode: str) -> bool:
+        m = self.HAMLIB_MODES.get(mode)
+        if m is None:
+            return False
+        self._query(f"M {m} 0")
+        return True
 
     def read_smeter(self):
         try:
@@ -613,6 +695,7 @@ class RadioPoller:
         self.running = True
         self.lock = threading.Lock()
         self._tune_to = None
+        self._mode_to = None
         self._scope_cmd = None
         self.scope_message = ""
         self.has_scope = hasattr(protocol, "latest_scope")
@@ -672,7 +755,15 @@ class RadioPoller:
     def _do_requests(self):
         with self.lock:
             hz, self._tune_to = self._tune_to, None
+            md, self._mode_to = self._mode_to, None
             sc, self._scope_cmd = self._scope_cmd, None
+        if md and hasattr(self.protocol, "set_mode"):
+            try:
+                if self.protocol.set_mode(md):
+                    with self.lock:
+                        self.state.mode = md
+            except Exception:
+                pass
         if hz and hasattr(self.protocol, "set_freq"):
             try:
                 if self.protocol.set_freq(hz):
@@ -691,6 +782,11 @@ class RadioPoller:
         """Ask the radio to move to `hz` (done in the background)."""
         with self.lock:
             self._tune_to = float(round(hz / 10) * 10)
+
+    def set_mode(self, mode: str):
+        """Ask the radio to change mode (done in the background)."""
+        with self.lock:
+            self._mode_to = mode
 
     def scope_whole_band(self):
         with self.lock:

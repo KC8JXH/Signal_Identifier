@@ -64,3 +64,44 @@ def digital_dial_at(hz: float):
             if d - 200 <= hz <= d + 3_200:
                 return mode, d
     return None
+
+
+# Band buttons: name -> (CW spot, digital (FT8) dial, phone spot or None)
+BAND_BUTTONS = {
+    "160": (1_830_000, 1_840_000, 1_900_000),
+    "80": (3_530_000, 3_573_000, 3_850_000),
+    "60": (5_332_000, 5_357_000, 5_330_500),
+    "40": (7_030_000, 7_074_000, 7_200_000),
+    "30": (10_110_000, 10_136_000, None),
+    "20": (14_030_000, 14_074_000, 14_250_000),
+    "17": (18_080_000, 18_100_000, 18_140_000),
+    "15": (21_030_000, 21_074_000, 21_300_000),
+    "12": (24_900_000, 24_915_000, 24_950_000),
+    "10": (28_030_000, 28_074_000, 28_400_000),
+    "6": (50_090_000, 50_313_000, 50_125_000),
+}
+
+
+def band_button_for(hz: float | None) -> str | None:
+    b = band_for(hz)
+    return b[2].replace(" m", "") if b else None
+
+
+def band_target(button: str, current_mode: str, memory: dict | None = None) -> tuple[float, str]:
+    """Where a band button should take the radio: (frequency, mode).
+
+    Returns to where you last were on that band if remembered; otherwise picks
+    a spot matching the kind of mode you're using now (CW, digital or phone).
+    """
+    if memory and button in memory:
+        f, m = memory[button]
+        return float(f), m
+    cw, digi, phone = BAND_BUTTONS[button]
+    m = (current_mode or "").upper()
+    if m.startswith("CW"):
+        return float(cw), "CW"
+    if m.endswith("-D") or m.startswith(("DATA", "PKT", "DIG")) or phone is None:
+        return float(digi), "USB-D"
+    if button == "60":
+        return float(phone), "USB"
+    return float(phone), ("LSB" if phone < 10_000_000 else "USB")
