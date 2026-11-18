@@ -105,6 +105,18 @@ radios assume 600 Hz). In AM or FM mode the audio frequency is shown instead.
 The S-meter uses Icom's published scale for Icom radios and rigctld's
 calibrated reading. For other radios it's approximate.
 
+## Saving a recording
+
+Press **Save recording** to save the last minute of audio as a WAV file in the
+`recordings` folder (the folder opens automatically). The file name includes
+the time (UTC) and, if the radio is connected, its frequency and mode.
+
+Recordings of signals the program gets wrong or can't identify are the best
+way to improve it. To share one, open this project on GitHub, click
+**Add file → Upload files**, drag the WAV file in and click **Commit changes**.
+
+You can also analyse a saved file: `python -m signal_identifier recordings\yourfile.wav`
+
 ## Good to know
 
 - This **identifies** the mode; it doesn't decode the text. To read the

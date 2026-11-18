@@ -16,6 +16,8 @@ from .classify import F_HI, analyze
 from .widgets import BandScope, Waterfall, meter_fraction
 
 WINDOW_SECONDS = 15.0   # how much recent audio each analysis looks at
+KEEP_SECONDS = 60.0     # how much audio is kept for "Save recording"
+RECORDINGS_DIR = Path(__file__).resolve().parent.parent / "recordings"
 ANALYSE_EVERY_MS = 1000
 SETTINGS_FILE = Path.home() / ".signal_identifier.json"
 
@@ -70,7 +72,7 @@ class SoundCardSource:
         import sounddevice as sd  # imported here so the demo works without it
         info = sd.query_devices(device)
         self.rate = float(info["default_samplerate"])
-        self.ring = RingBuffer(WINDOW_SECONDS, self.rate)
+        self.ring = RingBuffer(KEEP_SECONDS, self.rate)
         self.stream = sd.InputStream(device=device, channels=1, samplerate=self.rate,
                                      callback=self._cb, blocksize=0)
         self.stream.start()
@@ -96,7 +98,7 @@ class DemoSource:
         from . import synth
         self.synth = synth
         self.rate = float(synth.FS)
-        self.ring = RingBuffer(WINDOW_SECONDS, self.rate)
+        self.ring = RingBuffer(KEEP_SECONDS, self.rate)
         self.running = True
         self.scene_name = ""
         threading.Thread(target=self._run, daemon=True).start()
@@ -151,6 +153,33 @@ class DemoSource:
 
 
 # ---------------------------------------------------------------- colours
+
+def marker_text(d) -> str:
+    """Short label for the waterfall."""
+    if d.mode.startswith("Unknown"):
+        text = f"Data {d.bandwidth_hz:.0f} Hz"
+    elif d.mode == "Faint signal":
+        text = "Faint"
+    else:
+        text = d.mode
+    return text if d.confidence >= 0.6 else text + "?"
+
+
+def write_wav(path: Path, audio: np.ndarray, rate: float) -> Path:
+    import wave
+    path.parent.mkdir(parents=True, exist_ok=True)
+    x = np.asarray(audio, dtype=np.float64)
+    peak = np.max(np.abs(x)) if len(x) else 0
+    if peak > 1:
+        x = x / peak
+    pcm = (np.clip(x, -1, 1) * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(round(rate)))
+        w.writeframes(pcm.tobytes())
+    return path
+
 
 def load_settings() -> dict:
     try:
@@ -211,6 +240,7 @@ class App:
         self.start_btn = ttk.Button(top, text="Start listening", command=self.toggle)
         self.start_btn.pack(side="left")
         ttk.Button(top, text="Demo", command=self.start_demo).pack(side="left", padx=6)
+        ttk.Button(top, text="Save recording", command=self.save_recording).pack(side="left")
 
         # -- row 2: radio (CAT) connection
         rrow = ttk.Frame(controls, padding=(8, 2))
@@ -547,7 +577,7 @@ class App:
     def tick(self):
         try:
             if self.source is not None:
-                audio = self.source.ring.snapshot()
+                audio = self.source.ring.tail(int(WINDOW_SECONDS * self.source.rate))
                 secs = len(audio) / self.source.rate
                 if secs >= 3:
                     self.last_result = analyze(audio, self.source.rate, keep_spectrogram=False)
@@ -563,8 +593,36 @@ class App:
         if self.source is None or not dets:
             self.wf.set_markers([])
             return
-        self.wf.set_markers([(d.freq_hz, d.mode if d.confidence >= 0.6 else d.mode + "?",
-                              MODE_INFO.get(d.mode, ("", "white"))[1]) for d in dets])
+        self.wf.set_markers([(d.freq_hz, marker_text(d), MODE_INFO.get(d.mode, ("", "white"))[1]) for d in dets])
+
+    # -- recording -------------------------------------------------------------------
+
+    def save_recording(self):
+        """Save the last minute of audio as a WAV file (to study or share)."""
+        if self.source is None:
+            messagebox.showinfo("Signal Identifier", "Start listening first, then press Save recording.")
+            return
+        audio = self.source.ring.snapshot()
+        if len(audio) < self.source.rate:
+            messagebox.showinfo("Signal Identifier", "Not enough audio yet. Wait a few seconds and try again.")
+            return
+        st = self._radio_state()
+        name = time.strftime("%Y-%m-%d_%H%MZ", time.gmtime())
+        if st:
+            name += f"_{int(round(st.freq_hz))}Hz_{st.mode.replace('/', '-')}"
+        try:
+            path = write_wav(RECORDINGS_DIR / f"{name}.wav", audio, self.source.rate)
+        except Exception as e:
+            messagebox.showerror("Signal Identifier", f"Couldn't save the recording:\n\n{e}")
+            return
+        secs = len(audio) / self.source.rate
+        self.status.config(text=f"Saved {secs:.0f} seconds of audio to {path}")
+        try:
+            import os
+            if hasattr(os, "startfile"):
+                os.startfile(path.parent)  # open the folder in Windows Explorer
+        except Exception:
+            pass
 
 
 def main(demo: bool = False):
