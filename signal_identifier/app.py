@@ -350,34 +350,43 @@ class App:
         self.settings["click_to_tune"] = bool(self.click_tune.get())
         save_settings(self.settings)
 
-    def _band_click(self, hz: float):
-        from .bandplan import digital_dial_at
-        if not self.click_tune.get() or self.radio is None:
-            return
+    def _radio_for_click(self):
+        """The radio state if a click may tune it; otherwise say why not."""
+        if not self.click_tune.get():
+            self.status.config(text="Click-to-tune is switched off (tick 'Click a signal to tune the radio').")
+            return None
+        if self.radio is None:
+            self.status.config(text="Connect the radio first to tune by clicking.")
+            return None
         st = self.radio.get()
         if not st.ok:
+            self.status.config(text="The radio isn't answering, so it can't be tuned.")
+            return None
+        return st
+
+    def _tune(self, dial: float | None, st):
+        if dial is None:
+            self.status.config(text=f"Click-to-tune doesn't work in {st.mode} mode. Switch to USB, LSB, CW or RTTY.")
             return
-        mode = st.mode.upper()
-        slot = digital_dial_at(hz)
-        if mode.startswith("CW"):
-            dial = hz                      # CW: tune right onto the signal
-        elif slot and not mode.startswith("LSB"):
-            dial = slot[1]                 # FT8/FT4 area: the standard dial frequency
-        elif "LSB" in mode or mode.endswith("-L"):
-            dial = hz + 1500               # put the signal in the middle of the audio
-        else:
-            dial = hz - 1500
         self.radio.tune(dial)
         self.status.config(text=f"Tuning the radio to {R.format_freq(round(dial / 10) * 10)}")
 
+    def _band_click(self, hz: float):
+        """Click in the whole-band view (FT8/FT4 areas go to the standard dial)."""
+        st = self._radio_for_click()
+        if st is not None:
+            self._tune(R.tune_target(hz, st.mode, snap_digital=True), st)
+
     def _waterfall_click(self, audio_hz: float):
-        """Click in the detailed waterfall: tune the radio onto that signal."""
-        if not self.click_tune.get() or self.radio is None:
+        """Click in the detailed waterfall: tune exactly onto that signal."""
+        st = self._radio_for_click()
+        if st is None:
             return
-        st = self.radio.get()
-        rf = R.rf_frequency(st.freq_hz, st.mode, audio_hz, st.cw_pitch) if st.ok else None
-        if rf:
-            self._band_click(rf)
+        rf = R.rf_frequency(st.freq_hz, st.mode, audio_hz, st.cw_pitch)
+        if rf is None:
+            self._tune(None, st)
+            return
+        self._tune(R.tune_target(rf, st.mode, snap_digital=False), st)
 
     def _whole_band(self):
         if self.radio is None or not self.radio.has_scope:

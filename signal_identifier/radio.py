@@ -97,6 +97,10 @@ def rf_frequency(dial_hz: float | None, mode: str, audio_hz: float,
         pitch = cw_pitch or 600.0
         reverse = m in ("CWR", "CWL", "CWRN")
         return dial_hz - (audio_hz - pitch) if reverse else dial_hz + (audio_hz - pitch)
+    if m.startswith(("RTTY", "FSK")):
+        # The radio shows the mark frequency; the mark tone is heard at 2125 Hz.
+        upper = m in ("RTTYR", "RTTYU", "FSKR")
+        return dial_hz + (audio_hz - RTTY_MARK) if upper else dial_hz - (audio_hz - RTTY_MARK)
     lower = ("LSB", "DATAL", "PKTLSB", "LSBD")
     upper = ("USB", "DATAU", "PKTUSB", "USBD", "DIG", "DATA", "PSK", "PKT")
     if any(m.startswith(x) for x in lower):
@@ -104,6 +108,30 @@ def rf_frequency(dial_hz: float | None, mode: str, audio_hz: float,
     if any(m.startswith(x) for x in upper):
         return dial_hz + audio_hz
     return None
+
+
+RTTY_MARK = 2125.0
+
+
+def tune_target(rf_hz: float, mode: str, snap_digital: bool = False) -> float | None:
+    """Dial frequency that puts the signal at `rf_hz` where you want it:
+    CW and RTTY right on frequency (your CW pitch / the mark tone), sideband
+    and data modes in the middle of the audio (1500 Hz). With `snap_digital`,
+    a click inside a standard FT8/FT4 slot tunes to that slot's dial frequency.
+    Returns None for modes where this doesn't make sense (AM, FM)."""
+    m = mode.upper().replace("-", "").replace(" ", "").replace("_", "")
+    if m.startswith(("CW", "RTTY", "FSK")):
+        return rf_hz
+    lower = m.startswith(("LSB", "DATAL", "PKTLSB"))
+    upper = m.startswith(("USB", "DATAU", "PKTUSB", "DIG", "DATA", "PSK", "PKT"))
+    if not (lower or upper):
+        return None
+    if snap_digital and upper:
+        from .bandplan import digital_dial_at
+        slot = digital_dial_at(rf_hz)
+        if slot:
+            return float(slot[1])
+    return rf_hz + 1500 if lower else rf_hz - 1500
 
 
 def list_serial_ports() -> list[tuple[str, str]]:

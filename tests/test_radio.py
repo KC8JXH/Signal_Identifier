@@ -249,3 +249,27 @@ def test_icom_tune_and_span():
     assert b"\xfe\xfe\x94\xe0\x05" + R._bcd_le(14_074_000) + b"\xfd" in fs.written
     assert proto.scope_whole_span()
     proto.close()
+
+
+def test_tune_targets():
+    # detailed waterfall: exact, even inside the FT8 slot
+    assert R.tune_target(14_075_200, "USB-D") == 14_073_700
+    # band view: FT8 slot snaps to the standard dial frequency
+    assert R.tune_target(14_075_200, "USB-D", snap_digital=True) == 14_074_000
+    assert R.tune_target(7_150_000, "LSB") == 7_151_500
+    assert R.tune_target(7_030_100, "CW") == 7_030_100
+    assert R.tune_target(14_085_000, "RTTY") == 14_085_000
+    assert R.tune_target(7_200_000, "AM") is None
+
+
+def test_waterfall_click_round_trip():
+    # click a CW signal heard at 900 Hz with a 600 Hz pitch -> radio moves 300 Hz up
+    rf = R.rf_frequency(7_030_000, "CW", 900, 600)
+    assert R.tune_target(rf, "CW") == 7_030_300
+    # click a signal at 1000 Hz in USB-D at 14.074 -> it ends up at 1500 Hz audio
+    rf = R.rf_frequency(14_074_000, "USB-D", 1000)
+    new_dial = R.tune_target(rf, "USB-D")
+    assert R.rf_frequency(new_dial, "USB-D", 1500) == rf
+    # RTTY: the radio shows mark; mark tone heard at 2125 Hz
+    assert R.rf_frequency(14_085_000, "RTTY", 2125) == 14_085_000
+    assert R.rf_frequency(14_085_000, "RTTY", 2295) == 14_084_830
