@@ -386,13 +386,13 @@ class App:
         self.status.config(text=f"Tuning the radio to {R.format_freq(round(dial / 10) * 10)}")
 
     def _band_click(self, hz: float):
-        """Click in the whole-band view (FT8/FT4 areas go to the standard dial)."""
+        """Click in the whole-band view: the radio goes to the frequency under the pointer."""
         st = self._radio_for_click()
         if st is not None:
-            self._tune(R.tune_target(hz, st.mode, snap_digital=True), st)
+            self._tune(hz, st)
 
     def _waterfall_click(self, audio_hz: float):
-        """Click in the detailed waterfall: tune exactly onto that signal."""
+        """Click in the detailed waterfall: the radio goes to the frequency under the pointer."""
         st = self._radio_for_click()
         if st is None:
             return
@@ -400,7 +400,7 @@ class App:
         if rf is None:
             self._tune(None, st)
             return
-        self._tune(R.tune_target(rf, st.mode, snap_digital=False), st)
+        self._tune(rf, st)
 
     def _whole_band(self):
         if self.radio is None or not self.radio.has_scope:

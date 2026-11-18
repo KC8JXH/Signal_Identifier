@@ -82,10 +82,9 @@ SSB are usually found (US band plan). The dashed box is the slice you're
 listening to, which is what the detailed waterfall shows and what the program
 identifies.
 
-- **Click a signal**, in the band view or the detailed waterfall, to tune
-  the radio there (turn off "Click a signal to tune the radio" if you don't
-  want that). Clicking in an FT8/FT4 area tunes to the
-  standard dial frequency; in CW mode it tunes right onto the signal.
+- **Click** in the band view or the detailed waterfall and the radio goes to
+  the frequency shown under the pointer (turn off "Click a signal to tune the
+  radio" if you don't want that).
 - **Show whole band** switches the radio's scope to centre mode, ±500 kHz,
   which covers any band up to 500 kHz wide. Or set the scope to Fixed mode
   with the band edges on the radio itself; the program shows whatever the
