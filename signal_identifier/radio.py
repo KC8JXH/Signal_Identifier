@@ -55,29 +55,50 @@ class RadioState:
     mode: str = ""
     ok: bool = False
     message: str = ""
+    smeter_db: float | None = None   # dB relative to S9 (S9 = 0, S1 = -48)
+    cw_pitch: float | None = None    # Hz, when the radio tells us
 
     def freq_text(self) -> str:
-        return format_mhz(self.freq_hz) if self.freq_hz else "-"
+        return format_freq(self.freq_hz) if self.freq_hz else "-"
 
 
-def format_mhz(hz: float) -> str:
-    """14074000 -> '14.074.000 MHz' (the way most radios display it)."""
-    khz_int = int(round(hz))
-    mhz, rest = divmod(khz_int, 1_000_000)
-    khz, h = divmod(rest, 1000)
-    return f"{mhz}.{khz:03d}.{h:03d} MHz"
+def format_freq(hz: float) -> str:
+    """14074000 -> '14.074.00', the way the IC-7300 (and most radios) show it:
+    MHz . kHz . tens of Hz."""
+    tens = int(round(hz / 10))
+    mhz, rest = divmod(tens, 100_000)
+    khz, t = divmod(rest, 100)
+    return f"{mhz}.{khz:03d}.{t:02d}"
 
 
-def rf_frequency(dial_hz: float | None, mode: str, audio_hz: float) -> float | None:
-    """On-air frequency of a signal heard at `audio_hz` in the receiver audio.
+format_mhz = format_freq  # older name
 
-    Only worked out for sideband/data modes, where the relationship is simple.
+
+def s_units_text(db: float | None) -> str:
+    if db is None:
+        return ""
+    if db <= 0:
+        return f"S{max(0, int(9 + db / 6 + 0.5))}"
+    return f"S9+{int(db / 10 + 0.5) * 10}"
+
+
+def rf_frequency(dial_hz: float | None, mode: str, audio_hz: float,
+                 cw_pitch: float | None = None) -> float | None:
+    """On-air frequency of a signal heard at `audio_hz` in the receiver audio,
+    matching what the radio would display if you tuned to it.
+
+    SSB/data: dial +/- audio. CW: the radio shows the frequency at which a
+    signal sounds at your CW pitch, so dial +/- (audio - pitch).
     """
     if not dial_hz or not mode:
         return None
-    m = mode.upper().replace("-", "").replace(" ", "")
+    m = mode.upper().replace("-", "").replace(" ", "").replace("_", "")
+    if m.startswith("CW"):
+        pitch = cw_pitch or 600.0
+        reverse = m in ("CWR", "CWL", "CWRN")
+        return dial_hz - (audio_hz - pitch) if reverse else dial_hz + (audio_hz - pitch)
     lower = ("LSB", "DATAL", "PKTLSB", "LSBD")
-    upper = ("USB", "DATAU", "PKTUSB", "USBD", "DIG", "DATA", "PSK")
+    upper = ("USB", "DATAU", "PKTUSB", "USBD", "DIG", "DATA", "PSK", "PKT")
     if any(m.startswith(x) for x in lower):
         return dial_hz - audio_hz
     if any(m.startswith(x) for x in upper):
@@ -145,6 +166,13 @@ class SerialProtocol:
     def read(self) -> tuple[float | None, str]:
         raise NotImplementedError
 
+    def read_smeter(self) -> float | None:
+        """Signal strength in dB relative to S9, or None if not available."""
+        return None
+
+    def read_cw_pitch(self) -> float | None:
+        return None
+
 
 class IcomCIV(SerialProtocol):
     MODES = {0x00: "LSB", 0x01: "USB", 0x02: "AM", 0x03: "CW", 0x04: "RTTY", 0x05: "FM",
@@ -194,14 +222,42 @@ class IcomCIV(SerialProtocol):
                 mode += "-D"
         return freq, mode
 
-    def _command_sub(self, cmd: int, sub: int) -> bytes | None:
+    def read_smeter(self):
+        d = self._command_sub(0x15, 0x02, timeout=0.15)
+        if not d or len(d) < 2:
+            return None
+        raw = _bcd_be_to_int(d[:2])  # 0000 = S0, 0120 = S9, 0241 = S9+60
+        return icom_meter_db(raw)
+
+    def read_cw_pitch(self):
+        d = self._command_sub(0x14, 0x09)
+        if not d or len(d) < 2:
+            return None
+        raw = _bcd_be_to_int(d[:2])  # 0000-0255 = 300-900 Hz
+        return round((300 + raw * 600 / 255) / 5) * 5
+
+    def _command_sub(self, cmd: int, sub: int, timeout: float = 0.3) -> bytes | None:
         msg = bytes([0xFE, 0xFE, self.address, self.CONTROLLER, cmd, sub, 0xFD])
         self._want = cmd
-        buf = self._ask(msg, until=b"\xfd", timeout=0.3)
+        buf = self._ask(msg, until=b"\xfd", timeout=timeout)
         r = self._reply(buf, cmd)
         if r and len(r) >= 2 and r[0] == sub:
             return r[1:]
         return None
+
+
+def icom_meter_db(raw: int) -> float:
+    """Icom S-meter reading (0-255) -> dB relative to S9."""
+    if raw <= 120:
+        return (raw / 120 * 9 - 9) * 6
+    return (raw - 120) / 121 * 60
+
+
+def _scale_db(raw: float, s9: float, top: float) -> float:
+    """Generic meter: 0..s9 covers S0..S9, s9..top covers S9..S9+60."""
+    if raw <= s9:
+        return (raw / s9 * 9 - 9) * 6
+    return (raw - s9) / (top - s9) * 60
 
 
 class AsciiCAT(SerialProtocol):
@@ -233,12 +289,32 @@ class Kenwood(AsciiCAT):
     MODES = {"1": "LSB", "2": "USB", "3": "CW", "4": "FM", "5": "AM", "6": "FSK",
              "7": "CW-R", "9": "FSK-R"}
 
+    def read_smeter(self):
+        v = self._cmd(b"SM0;", b"SM0")
+        if not v or not v.isdigit():
+            return None
+        return _scale_db(int(v), 15, 30)  # TS-590 style 0-30, S9 ~ 15 (approximate)
+
+
+class Elecraft(Kenwood):
+    def read_smeter(self):
+        v = self._cmd(b"SM;", b"SM")
+        if not v or not v.isdigit():
+            return None
+        return _scale_db(int(v), 9, 21)  # K3/KX3: 0-21 (approximate)
+
 
 class YaesuNew(AsciiCAT):
     MODE_CMD = b"MD0;"
     MODES = {"1": "LSB", "2": "USB", "3": "CW-U", "4": "FM", "5": "AM", "6": "RTTY-L",
              "7": "CW-L", "8": "DATA-L", "9": "RTTY-U", "A": "DATA-FM", "B": "FM-N",
              "C": "DATA-U", "D": "AM-N", "E": "PSK", "F": "DATA-FM-N"}
+
+    def read_smeter(self):
+        v = self._cmd(b"SM0;", b"SM0")
+        if not v or not v.isdigit():
+            return None
+        return _scale_db(int(v), 130, 255)  # 0-255, S9 ~ 130 (approximate)
 
 
 class YaesuOld(SerialProtocol):
@@ -254,6 +330,13 @@ class YaesuOld(SerialProtocol):
         freq = _bcd_be_to_int(buf[:4]) * 10
         mode = self.MODES.get(buf[4], f"mode {buf[4]:02X}")
         return float(freq), mode
+
+    def read_smeter(self):
+        buf = self._ask(bytes([0, 0, 0, 0, 0xE7]), until=b"", timeout=0.3, min_len=1)
+        if not buf:
+            return None
+        n = buf[-1] & 0x0F  # 0-9 = S0-S9, 10-15 = +10..+60
+        return (n - 9) * 6.0 if n <= 9 else (n - 9) * 10.0
 
 
 class _QuickTransport(xmlrpc.client.Transport):
@@ -274,6 +357,13 @@ class Flrig:
         f = self.proxy.rig.get_vfo()
         m = self.proxy.rig.get_mode()
         return float(f), str(m)
+
+    def read_smeter(self):
+        try:
+            v = float(self.proxy.rig.get_smeter())
+        except Exception:
+            return None
+        return _scale_db(v, 50, 100)  # flrig: 0-100, S9 at 50
 
 
 class Rigctld:
@@ -299,6 +389,13 @@ class Rigctld:
         if not f or f[0].startswith("RPRT"):
             raise IOError("rigctld reported an error: " + " ".join(f))
         return float(f[0]), (m[0] if m and not m[0].startswith("RPRT") else "")
+
+    def read_smeter(self):
+        try:
+            v = self._query("l STRENGTH")
+            return float(v[0]) if v and not v[0].startswith("RPRT") else None
+        except Exception:
+            return None
 
 
 # ------------------------------------------------------------------ poller
@@ -338,16 +435,20 @@ def make_protocol(radio: str, port_name: str = "", baud: int = 0, address: int |
         return YaesuNew(sp), sp
     if proto == "yaesu_old":
         return YaesuOld(sp), sp
+    if radio.startswith("Elecraft"):
+        return Elecraft(sp), sp
     return Kenwood(sp), sp
 
 
 class RadioPoller:
-    """Asks the radio for frequency and mode about once a second, in the background."""
+    """Reads the radio in the background: S-meter several times a second,
+    frequency and mode about once a second, CW pitch now and then."""
 
-    def __init__(self, protocol, serial_port=None, interval: float = 1.0):
+    def __init__(self, protocol, serial_port=None, interval: float = 1.0, meter_interval: float = 0.2):
         self.protocol = protocol
         self.serial_port = serial_port
         self.interval = interval
+        self.meter_interval = meter_interval
         self.state = RadioState(message="Connecting…")
         self.running = True
         self.lock = threading.Lock()
@@ -356,26 +457,51 @@ class RadioPoller:
 
     def _run(self):
         fails = 0
+        last_full = 0.0
+        last_pitch = -1e9
+        meter_ok = True
+        pitch = None
         while self.running:
-            try:
-                freq, mode = self.protocol.read()
-                if freq:
-                    fails = 0
-                    st = RadioState(freq, mode, True, "")
-                else:
+            now = time.monotonic()
+            if now - last_full >= self.interval:
+                last_full = now
+                try:
+                    freq, mode = self.protocol.read()
+                    if freq:
+                        fails = 0
+                        if mode.upper().startswith("CW") and now - last_pitch > 10:
+                            last_pitch = now
+                            try:
+                                pitch = self.protocol.read_cw_pitch() or pitch
+                            except Exception:
+                                pass
+                        with self.lock:
+                            old = self.state
+                            self.state = RadioState(freq, mode, True, "", old.smeter_db, pitch)
+                    else:
+                        fails += 1
+                        self._fail("Radio isn't answering. Check the port, speed (baud) and radio model.", fails)
+                except Exception as e:
                     fails += 1
-                    st = RadioState(None, "", False, "Radio isn't answering. Check the port, speed (baud) and radio model.")
-            except Exception as e:
-                fails += 1
-                st = RadioState(None, "", False, f"Radio connection problem: {e}")
-            with self.lock:
-                if st.ok or fails >= 2 or not self.state.ok:
-                    self.state = st
-            time.sleep(self.interval)
+                    self._fail(f"Radio connection problem: {e}", fails)
+            if meter_ok and self.state.ok:
+                try:
+                    db = self.protocol.read_smeter()
+                    with self.lock:
+                        self.state.smeter_db = db
+                except Exception:
+                    meter_ok = False  # radio doesn't support it; stop asking
+            time.sleep(self.meter_interval if meter_ok and self.state.ok else min(self.interval, 0.5))
+
+    def _fail(self, msg: str, fails: int):
+        with self.lock:
+            if fails >= 2 or not self.state.ok:
+                self.state = RadioState(None, "", False, msg)
 
     def get(self) -> RadioState:
         with self.lock:
-            return self.state
+            st = self.state
+            return RadioState(st.freq_hz, st.mode, st.ok, st.message, st.smeter_db, st.cw_pitch)
 
     def stop(self):
         self.running = False

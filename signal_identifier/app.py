@@ -13,10 +13,10 @@ import numpy as np
 
 from . import radio as R
 from .classify import F_HI, analyze
+from .widgets import SMeter, Waterfall
 
 WINDOW_SECONDS = 15.0   # how much recent audio each analysis looks at
 ANALYSE_EVERY_MS = 1000
-AXIS_H = 40             # space above the waterfall for the scale and labels
 RESULT_LINES = 6        # fixed number of result lines, so the window never jumps
 SETTINGS_FILE = Path.home() / ".signal_identifier.json"
 
@@ -55,6 +55,11 @@ class RingBuffer:
                 self.buf[-n:] = x
             self.filled = min(len(self.buf), self.filled + n)
             self.last_peak = float(np.max(np.abs(x))) if n else 0.0
+
+    def tail(self, n: int) -> np.ndarray:
+        with self.lock:
+            n = min(n, self.filled)
+            return self.buf[-n:].copy() if n else np.zeros(0, np.float32)
 
     def snapshot(self) -> np.ndarray:
         with self.lock:
@@ -148,28 +153,6 @@ class DemoSource:
 
 # ---------------------------------------------------------------- colours
 
-def _colormap(v: np.ndarray) -> np.ndarray:
-    """0..1 -> RGB (dark blue -> cyan -> yellow -> white), like a rig waterfall."""
-    stops = np.array([[0, 0, 30], [0, 40, 140], [0, 180, 220], [250, 230, 40], [255, 255, 255]], float)
-    pos = np.clip(v, 0, 1) * (len(stops) - 1)
-    i = np.minimum(pos.astype(int), len(stops) - 2)
-    f = (pos - i)[..., None]
-    return (stops[i] * (1 - f) + stops[i + 1] * f).astype(np.uint8)
-
-
-def waterfall_ppm(spec_db: np.ndarray, noise_db: np.ndarray, freqs: np.ndarray,
-                  width: int, height: int) -> bytes:
-    """Turn a spectrogram into PPM image bytes (newest audio at the top)."""
-    rel = spec_db - noise_db[None, :]
-    v = (rel + 3) / 30.0
-    cols = np.linspace(0, F_HI, width)
-    idx = np.clip(np.searchsorted(freqs, cols), 0, len(freqs) - 1)
-    v = v[:, idx]
-    rows = np.linspace(0, len(v) - 1, height).astype(int)[::-1]
-    rgb = _colormap(v[rows])
-    return f"P6 {width} {height} 255 ".encode() + rgb.tobytes()
-
-
 def load_settings() -> dict:
     try:
         return json.loads(SETTINGS_FILE.read_text())
@@ -240,26 +223,41 @@ class App:
         self.level_text = ttk.Label(lvl, text="", width=40)
         self.level_text.pack(side="left")
 
-        # -- radio readout + main answer (fixed heights)
+        # -- radio display + S-meter on the right, results on the left (fixed heights)
         head = tk.Frame(root, padx=8, pady=4)
         head.pack(fill="x")
-        self.radio_lbl = tk.Label(head, text="Radio: not connected", font=("Segoe UI", 14), anchor="w", fg="#555")
-        self.radio_lbl.pack(fill="x")
-        self.big = tk.Label(head, text="Not listening", font=("Segoe UI", 22, "bold"), anchor="w")
+        right = tk.Frame(head)
+        right.pack(side="right", anchor="n", padx=(8, 0))
+        self.smeter = SMeter(right)
+        self.smeter.pack()
+        left = tk.Frame(head)
+        left.pack(side="left", fill="x", expand=True, anchor="n")
+
+        lcd = tk.Frame(left, bg="#0b0f14", padx=12, pady=4)
+        lcd.pack(fill="x")
+        self.lcd_freq = tk.Label(lcd, text="--.---.--", font=("Consolas", 30, "bold"),
+                                 bg="#0b0f14", fg="#4a5560", anchor="w", width=11)
+        self.lcd_freq.pack(side="left")
+        self.lcd_mode = tk.Label(lcd, text="", font=("Consolas", 18, "bold"),
+                                 bg="#0b0f14", fg="#39c5ff", anchor="w", width=8)
+        self.lcd_mode.pack(side="left", padx=(10, 0))
+        self.lcd_msg = tk.Label(lcd, text="Radio not connected", font=("Segoe UI", 10),
+                                bg="#0b0f14", fg="#8a96a3", anchor="w")
+        self.lcd_msg.pack(side="left", padx=(12, 0), fill="x", expand=True)
+
+        self.big = tk.Label(left, text="Not listening", font=("Segoe UI", 22, "bold"), anchor="w")
         self.big.pack(fill="x")
         self.lines = []
-        for _ in range(RESULT_LINES):
-            lab = tk.Label(head, text="", anchor="w", font=("Segoe UI", 11))
+        for _ in range(RESULT_LINES - 1):
+            lab = tk.Label(left, text="", anchor="w", font=("Segoe UI", 11))
             lab.pack(fill="x")
             self.lines.append(lab)
 
         # -- waterfall fills the rest of the window
         wf = tk.Frame(root, padx=8, pady=8)
         wf.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(wf, bg="#000010", highlightthickness=0, width=10, height=10)
-        self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda e: self._redraw())
-        self.wf_image = None
+        self.wf = Waterfall(wf, fmax=F_HI)
+        self.wf.pack(fill="both", expand=True)
 
         self._fill_devices()
         self._fill_ports()
@@ -268,6 +266,7 @@ class App:
         root.after(ANALYSE_EVERY_MS, self.tick)
         root.after(100, self.level_tick)
         root.after(300, self.radio_tick)
+        root.after(80, self.wf_tick)
         if demo:
             root.after(200, self.start_demo)
 
@@ -337,7 +336,6 @@ class App:
             self.radio.stop()
             self.radio = None
             self.radio_btn.config(text="Connect radio")
-            self.radio_lbl.config(text="Radio: not connected", fg="#555")
             self.settings["radio_autoconnect"] = False
             save_settings(self.settings)
             return
@@ -365,7 +363,6 @@ class App:
             return
         self.radio = R.RadioPoller(protocol, sp)
         self.radio_btn.config(text="Disconnect radio")
-        self.radio_lbl.config(text="Radio: connecting…", fg="#555")
         self.settings.update(radio=name, radio_port=port, radio_baud=self.baud_box.get(),
                              radio_autoconnect=True)
         save_settings(self.settings)
@@ -374,10 +371,36 @@ class App:
         if self.radio is not None:
             st = self.radio.get()
             if st.ok:
-                self.radio_lbl.config(text=f"Radio: {st.freq_text()}   {st.mode}", fg="black")
+                self.lcd_freq.config(text=st.freq_text(), fg="#f2f2f2")
+                self.lcd_mode.config(text=st.mode)
+                pitch = f"CW pitch {st.cw_pitch:.0f} Hz" if st.cw_pitch and st.mode.upper().startswith("CW") else ""
+                self.lcd_msg.config(text=pitch, fg="#8a96a3")
+                self.smeter.set(st.smeter_db, True)
+                self.wf.set_dial((st.freq_hz, st.mode, st.cw_pitch))
             else:
-                self.radio_lbl.config(text=f"Radio: {st.message}", fg="#c92a2a")
-        self.root.after(500, self.radio_tick)
+                self.lcd_freq.config(text="--.---.--", fg="#4a5560")
+                self.lcd_mode.config(text="")
+                self.lcd_msg.config(text=st.message, fg="#ff8787")
+                self.smeter.set(None, True)
+                self.wf.set_dial(None)
+        else:
+            self.lcd_freq.config(text="--.---.--", fg="#4a5560")
+            self.lcd_mode.config(text="")
+            self.lcd_msg.config(text="Radio not connected", fg="#8a96a3")
+            self.smeter.set(None, False)
+            self.wf.set_dial(None)
+        self.root.after(200, self.radio_tick)
+
+    def wf_tick(self):
+        try:
+            if self.source is not None:
+                need = self.wf.need_samples(self.source.rate)
+                audio = self.source.ring.tail(need)
+                if len(audio) >= need:
+                    self.wf.add_audio(audio, self.source.rate)
+        except Exception as e:
+            self.status.config(text=f"Waterfall problem: {e}")
+        self.root.after(80, self.wf_tick)
 
     def _radio_state(self):
         if self.radio is None:
@@ -425,7 +448,7 @@ class App:
         self.start_btn.config(text="Start listening")
         self.big.config(text="Not listening", fg="black")
         self._show([])
-        self.canvas.delete("wf")
+        self.wf.clear()
 
     def quit(self):
         self.stop()
@@ -458,8 +481,7 @@ class App:
                 audio = self.source.ring.snapshot()
                 secs = len(audio) / self.source.rate
                 if secs >= 3:
-                    self.last_result = analyze(audio, self.source.rate)
-                    self._redraw()
+                    self.last_result = analyze(audio, self.source.rate, keep_spectrogram=False)
                     self._show(self.last_result.detections, secs)
                 else:
                     self.big.config(text=f"Listening… ({secs:.0f} s)")
@@ -467,10 +489,13 @@ class App:
             self.status.config(text=f"Problem analysing audio: {e}")
         self.root.after(ANALYSE_EVERY_MS, self.tick)
 
+    def _rf(self, d, st):
+        return R.rf_frequency(st.freq_hz, st.mode, d.freq_hz, st.cw_pitch) if st else None
+
     def _describe(self, d, st) -> str:
-        rf = R.rf_frequency(st.freq_hz, st.mode, d.freq_hz) if st else None
+        rf = self._rf(d, st)
         if rf:
-            s = f"{d.mode} at {R.format_mhz(rf)}"
+            s = f"{d.mode} at {R.format_freq(rf)}"
             if d.detail:
                 s += f" ({d.detail})"
             return s
@@ -479,7 +504,7 @@ class App:
     def _show(self, dets, secs: float = 0):
         for lab in self.lines:
             lab.config(text="")
-        self.canvas.delete("marker")
+        self.wf.set_markers([])
         if self.source is None:
             return
         if not dets:
@@ -489,53 +514,19 @@ class App:
         best = max(dets, key=lambda d: d.confidence * (1 + d.strength_db / 30))
         self.big.config(text=self._describe(best, st), fg=MODE_INFO.get(best.mode, ("", "black"))[1])
         ranked = sorted(dets, key=lambda d: -d.confidence)
-        n_show = RESULT_LINES - 1 if len(ranked) > RESULT_LINES else RESULT_LINES
+        n_lines = len(self.lines)
+        n_show = n_lines - 1 if len(ranked) > n_lines else n_lines
         for lab, d in zip(self.lines, ranked[:n_show]):
             info, colour = MODE_INFO.get(d.mode, ("", "black"))
             sure = "very likely" if d.confidence >= 0.8 else "likely" if d.confidence >= 0.6 else "maybe"
-            audio = f", {d.freq_hz:,.0f} Hz audio" if st and R.rf_frequency(st.freq_hz, st.mode, d.freq_hz) else ""
+            audio = f", {d.freq_hz:,.0f} Hz audio" if self._rf(d, st) else ""
             lab.config(text=f"• {self._describe(d, st)}: {info} [{sure}{audio}]", fg=colour)
-        if len(ranked) > RESULT_LINES:
+        if len(ranked) > n_lines:
             self.lines[-1].config(text=f"… and {len(ranked) - n_show} more (see the labels on the waterfall)",
                                   fg="#555")
         elif secs and secs < 12:
             self.lines[-1].config(text="(Still gathering audio; FT8 is clearest after 15 seconds.)", fg="#777")
-        self._draw_markers(dets)
-
-    # -- waterfall ---------------------------------------------------------------
-
-    def _size(self):
-        return max(100, self.canvas.winfo_width()), max(AXIS_H + 50, self.canvas.winfo_height())
-
-    def _redraw(self):
-        self.canvas.delete("axis")
-        w, h = self._size()
-        for f in range(0, int(F_HI) + 1, 250):
-            x = f / F_HI * w
-            major = f % 500 == 0
-            self.canvas.create_line(x, 0, x, 8 if major else 4, fill="#aaa", tags="axis")
-            if major:
-                self.canvas.create_text(min(max(x, 14), w - 20), 15, text=f"{f} Hz" if f == 0 else f"{f}",
-                                        fill="#ccc", font=("Segoe UI", 8), tags="axis")
-        if self.last_result is not None and self.last_result.spectrogram_db is not None and self.source is not None:
-            r = self.last_result
-            ppm = waterfall_ppm(r.spectrogram_db, r.noise_db, r.freqs_hz, w, h - AXIS_H)
-            img = tk.PhotoImage(data=ppm, format="PPM")
-            self.wf_image = img  # keep a reference so Tk doesn't discard it
-            self.canvas.delete("wf")
-            self.canvas.create_image(0, AXIS_H, image=img, anchor="nw", tags="wf")
-            self._draw_markers(r.detections)
-
-    def _draw_markers(self, dets):
-        self.canvas.delete("marker")
-        if self.source is None:
-            return
-        w, _ = self._size()
-        for d in dets:
-            colour = MODE_INFO.get(d.mode, ("", "white"))[1]
-            x = d.freq_hz / F_HI * w
-            self.canvas.create_text(x, 30, text=d.mode, fill=colour, font=("Segoe UI", 10, "bold"),
-                                    tags="marker")
+        self.wf.set_markers([(d.freq_hz, d.mode, MODE_INFO.get(d.mode, ("", "white"))[1]) for d in dets])
 
 
 def main(demo: bool = False):

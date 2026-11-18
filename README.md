@@ -42,9 +42,15 @@ easiest to recognise after a full 15-second cycle.
 
 ## Showing the radio's frequency (IC-7300 and others)
 
-The program can read the dial frequency and mode from your radio. With that,
-each signal is shown at its real on-air frequency, e.g. **FT8 at
-14.075.223 MHz**. It only *reads* from the radio and never changes anything.
+The program can read the dial frequency, mode and S-meter from your radio.
+With that you get:
+
+- a radio-style frequency display, laid out like the IC-7300's (**14.074.00**)
+- an analog **S-meter**
+- each signal shown at its real on-air frequency, e.g. **FT8 at 14.075.22**
+- the waterfall scale labelled in radio frequencies
+
+It only *reads* from the radio and never changes anything or transmits.
 
 **IC-7300, step by step**
 
@@ -67,8 +73,13 @@ Elecraft. Set **Speed** to match the CAT rate set in your radio's menu.
 port at once. To share it, run **flrig** (free), point both WSJT-X and this
 program at it (choose **flrig** in the Radio list), or use **Hamlib rigctld**.
 
-On-air frequencies are worked out for USB, LSB and data modes (USB-D, etc.).
-In CW, AM or FM mode the audio frequency is shown instead.
+On-air frequencies are worked out for USB, LSB and data modes (USB-D, etc.)
+and for CW. In CW mode the frequency shown is what the radio would display if
+you tuned to that signal (the IC-7300's CW pitch is read automatically; other
+radios assume 600 Hz). In AM or FM mode the audio frequency is shown instead.
+
+The S-meter uses Icom's published scale for Icom radios and rigctld's
+calibrated reading. For other radios it's approximate.
 
 ## Good to know
 

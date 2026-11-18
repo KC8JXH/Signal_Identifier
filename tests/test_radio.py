@@ -35,7 +35,7 @@ class FakeSerial:
         pass
 
 
-def ic7300(freq=14074000, mode=0x01, data=1, echo=True):
+def ic7300(freq=14074000, mode=0x01, data=1, echo=True, meter=120, pitch=128):
     def bcd_le(v):
         out = []
         for _ in range(5):
@@ -51,6 +51,10 @@ def ic7300(freq=14074000, mode=0x01, data=1, echo=True):
             reply += b"\xfe\xfe\xe0\x94\x03" + bcd_le(freq) + b"\xfd"
         elif c == 0x04:
             reply += b"\xfe\xfe\xe0\x94\x04" + bytes([mode, 1]) + b"\xfd"
+        elif c == 0x15 and cmd[5] == 0x02:
+            reply += b"\xfe\xfe\xe0\x94\x15\x02" + bytes([meter // 100, ((meter // 10 % 10) << 4) | meter % 10]) + b"\xfd"
+        elif c == 0x14 and cmd[5] == 0x09:
+            reply += b"\xfe\xfe\xe0\x94\x14\x09" + bytes([pitch // 100, ((pitch // 10 % 10) << 4) | pitch % 10]) + b"\xfd"
         elif c == 0x1A and cmd[5] == 0x06:
             reply += b"\xfe\xfe\xe0\x94\x1a\x06" + bytes([data, 1 if data else 0]) + b"\xfd"
         return reply
@@ -100,6 +104,12 @@ def test_yaesu_old():
     assert proto.read() == (14074000, "DIG")
 
 
+def test_yaesu_old_smeter():
+    proto, _ = R.make_protocol("Yaesu FT-817 / 818 / 857 / 897", "COM7",
+                               serial_factory=lambda n, b: FakeSerial(lambda c: bytes([0x09])))
+    assert proto.read_smeter() == 0.0
+
+
 def test_silent_radio_returns_nothing():
     proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: FakeSerial(lambda c: b""))
     assert proto.read() == (None, "")
@@ -121,13 +131,14 @@ def test_rigctld():
     class H(socketserver.StreamRequestHandler):
         def handle(self):
             line = self.rfile.readline().strip()
-            self.wfile.write({b"f": b"7074000\n", b"m": b"PKTUSB\n3000\n"}[line])
+            self.wfile.write({b"f": b"7074000\n", b"m": b"PKTUSB\n3000\n", b"l STRENGTH": b"-12\n"}[line])
 
     srv = socketserver.TCPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         proto, _ = R.make_protocol("Hamlib rigctld", net_port=srv.server_address[1])
         assert proto.read() == (7074000.0, "PKTUSB")
+        assert proto.read_smeter() == -12.0
     finally:
         srv.shutdown()
         srv.server_close()
@@ -137,9 +148,28 @@ def test_rf_frequency_and_format():
     assert R.rf_frequency(14074000, "USB-D", 1223) == 14075223
     assert R.rf_frequency(7074000, "LSB", 1000) == 7073000
     assert R.rf_frequency(14074000, "DATA-U", 500) == 14074500
-    assert R.rf_frequency(7030000, "CW", 700) is None
-    assert R.format_mhz(14075223) == "14.075.223 MHz"
-    assert R.format_mhz(7030500) == "7.030.500 MHz"
+    # CW: the radio shows the frequency where a signal sounds at your pitch
+    assert R.rf_frequency(7030000, "CW", 700, cw_pitch=600) == 7030100
+    assert R.rf_frequency(7030000, "CW", 600, cw_pitch=600) == 7030000
+    assert R.rf_frequency(7030000, "CW-R", 700, cw_pitch=600) == 7029900
+    assert R.rf_frequency(7200000, "AM", 700) is None
+    # same layout as the IC-7300 display
+    assert R.format_freq(14074000) == "14.074.00"
+    assert R.format_freq(14075223) == "14.075.22"
+    assert R.format_freq(7030500) == "7.030.50"
+    assert R.format_freq(144174000) == "144.174.00"
+
+
+def test_icom_smeter_and_pitch():
+    for raw, db, text in [(0, -54, "S0"), (120, 0, "S9"), (241, 60, "S9+60"), (60, -27, "S5")]:
+        fs = FakeSerial(ic7300(meter=raw))
+        proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+        got = proto.read_smeter()
+        assert abs(got - db) < 1, (raw, got)
+        assert R.s_units_text(got) == text
+    fs = FakeSerial(ic7300(pitch=128))
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    assert proto.read_cw_pitch() == 600
 
 
 def test_poller_reports_state():
@@ -151,7 +181,12 @@ def test_poller_reports_state():
             if p.get().ok:
                 break
             time.sleep(0.05)
+        for _ in range(40):
+            if p.get().smeter_db is not None:
+                break
+            time.sleep(0.05)
         st = p.get()
         assert st.ok and st.freq_hz == 14074000 and st.mode == "USB-D"
+        assert st.smeter_db is not None and abs(st.smeter_db) < 1
     finally:
         p.stop()
