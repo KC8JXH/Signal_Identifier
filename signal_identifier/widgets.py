@@ -1,103 +1,23 @@
-"""Custom display widgets: an analog S-meter and a scrolling waterfall."""
+"""Custom display widgets: the scrolling audio waterfall and the whole-band view."""
 
 from __future__ import annotations
 
-import math
 import tkinter as tk
 
 import numpy as np
 
 from .dsp import decimate
 
-# ---------------------------------------------------------------- S-meter
+# ---------------------------------------------------------------- meter scale
 
 
 def meter_fraction(db: float | None) -> float:
-    """dB relative to S9 -> needle position 0..1 (S0..S9 on the first 60%)."""
+    """dB relative to S9 -> 0..1 for a bar meter (S0..S9 on the first 60%)."""
     if db is None:
         return 0.0
     if db <= 0:
         return max(0.0, (9 + db / 6) / 9 * 0.6)
     return 0.6 + min(db, 60) / 60 * 0.4
-
-
-class SMeter(tk.Canvas):
-    """Analog S-meter with a needle that swings like a real one."""
-
-    W, H = 320, 170
-    A0, A1 = 145.0, 35.0   # needle sweep, degrees (left to right)
-
-    def __init__(self, master, **kw):
-        super().__init__(master, width=self.W, height=self.H, bg="#1b1b1b",
-                         highlightthickness=0, **kw)
-        self.target = None
-        self.pos = 0.0
-        self.cx, self.cy, self.r = self.W / 2, self.H + 40, 175
-        self._draw_face()
-        self.needle = self.create_line(0, 0, 0, 0, width=2, fill="#c00000", capstyle="round")
-        self.readout = self.create_text(self.W - 12, self.H - 14, anchor="e", text="",
-                                        font=("Segoe UI", 11, "bold"), fill="#222")
-        self.note = self.create_text(12, self.H - 14, anchor="w", text="No radio",
-                                     font=("Segoe UI", 9), fill="#666")
-        self._place_needle()
-        self.after(50, self._animate)
-
-    def _xy(self, frac: float, r: float):
-        a = math.radians(self.A0 + (self.A1 - self.A0) * frac)
-        return self.cx + r * math.cos(a), self.cy - r * math.sin(a)
-
-    def _arc(self, f0, f1, r, colour, width):
-        pts = []
-        for i in range(31):
-            pts += self._xy(f0 + (f1 - f0) * i / 30, r)
-        self.create_line(*pts, fill=colour, width=width, smooth=True)
-
-    def _draw_face(self):
-        self.create_rectangle(4, 4, self.W - 4, self.H - 4, fill="#f4ecd6", outline="#888", width=2)
-        self.create_text(14, 14, anchor="nw", text="S", font=("Georgia", 14, "bold italic"), fill="#333")
-        self._arc(0, 0.6, self.r - 40, "#222", 2)
-        self._arc(0.6, 1.0, self.r - 40, "#c00000", 3)
-        marks = [(f"{n}", meter_fraction((n - 9) * 6), "#222") for n in (1, 3, 5, 7, 9)]
-        marks += [(f"+{d}", meter_fraction(d), "#c00000") for d in (20, 40, 60)]
-        for n in range(0, 10):
-            f = meter_fraction((n - 9) * 6)
-            x0, y0 = self._xy(f, self.r - 40)
-            x1, y1 = self._xy(f, self.r - (52 if n % 2 else 46))
-            self.create_line(x0, y0, x1, y1, fill="#222", width=1)
-        for d in (10, 20, 30, 40, 50, 60):
-            f = meter_fraction(d)
-            x0, y0 = self._xy(f, self.r - 40)
-            x1, y1 = self._xy(f, self.r - (52 if d % 20 == 0 else 46))
-            self.create_line(x0, y0, x1, y1, fill="#c00000", width=1)
-        for text, f, colour in marks:
-            x, y = self._xy(f, self.r - 64)
-            self.create_text(x, y, text=text, font=("Segoe UI", 10, "bold"), fill=colour)
-
-    def set(self, db: float | None, connected: bool):
-        self.target = db
-        if not connected:
-            self.itemconfig(self.note, text="No radio")
-            self.itemconfig(self.readout, text="")
-        elif db is None:
-            self.itemconfig(self.note, text="Meter not available")
-            self.itemconfig(self.readout, text="")
-        else:
-            from .radio import s_units_text
-            self.itemconfig(self.note, text="")
-            self.itemconfig(self.readout, text=s_units_text(db))
-
-    def _place_needle(self):
-        x0, y0 = self._xy(self.pos, 30)
-        x1, y1 = self._xy(self.pos, self.r - 38)
-        self.coords(self.needle, x0, y0, x1, y1)
-
-    def _animate(self):
-        goal = meter_fraction(self.target)
-        # Quick to rise, slower to fall, like a real meter.
-        k = 0.55 if goal > self.pos else 0.18
-        self.pos += (goal - self.pos) * k
-        self._place_needle()
-        self.after(50, self._animate)
 
 
 # ---------------------------------------------------------------- waterfall
@@ -248,3 +168,179 @@ class Waterfall(tk.Canvas):
             self.create_text(x, self.AXIS_H - 16, text=text, fill=colour,
                              font=("Segoe UI", 10, "bold"), tags="marker")
             self.create_line(x, self.AXIS_H - 8, x, self.AXIS_H, fill=colour, width=2, tags="marker")
+
+
+# ---------------------------------------------------------------- whole-band view
+
+
+def _mhz3(hz: float) -> str:
+    return f"{hz / 1e6:.3f}"
+
+
+class BandScope(tk.Canvas):
+    """Whole-band waterfall from the radio's own band scope (Icom CI-V).
+
+    Shows band-plan hints along the top, a box around the slice you are
+    listening to, and (optionally) tunes the radio where you click.
+    """
+
+    AXIS_H = 20
+    HINT_H = 16
+    HEIGHT = 170
+
+    def __init__(self, master, on_click=None, **kw):
+        super().__init__(master, bg="#000014", highlightthickness=0, width=10, height=self.HEIGHT, **kw)
+        self.on_click = on_click
+        self.buf = None
+        self.img = None
+        self.view = None          # (lo_hz, hi_hz) shown across the width
+        self.last_sweep = None
+        self.state = None         # RadioState
+        self.message = "Connect an Icom radio (like the IC-7300) to see the whole band here."
+        self.hover = None
+        self.bind("<Configure>", lambda e: self._reset())
+        self.bind("<Button-1>", self._click)
+        self.bind("<Motion>", self._motion)
+        self.bind("<Leave>", lambda e: self._motion(None))
+        self._reset()
+
+    @property
+    def top(self):
+        return self.AXIS_H + self.HINT_H
+
+    def _size(self):
+        return max(100, self.winfo_width()), max(self.top + 20, self.winfo_height())
+
+    def _reset(self):
+        w, h = self._size()
+        self.buf = np.zeros((h - self.top, w, 3), np.uint8)
+        self.buf[:] = colormap(np.zeros(1))[0]
+        self._render()
+        self._overlay()
+
+    def x_to_hz(self, x: float) -> float | None:
+        if not self.view:
+            return None
+        w, _ = self._size()
+        lo, hi = self.view
+        return lo + (hi - lo) * x / w
+
+    def hz_to_x(self, hz: float) -> float:
+        w, _ = self._size()
+        lo, hi = self.view
+        return (hz - lo) / (hi - lo) * w
+
+    # -- data -------------------------------------------------------------------
+
+    def update_scope(self, sweep, state):
+        """Called regularly by the window with the newest sweep and radio state."""
+        self.state = state
+        if sweep is None:
+            if self.view is None:
+                self._overlay()
+            return
+        if sweep is self.last_sweep:
+            return
+        self.last_sweep = sweep
+        from .bandplan import band_for
+        band = band_for((sweep.lo_hz + sweep.hi_hz) / 2) or band_for(state.freq_hz if state else None)
+        if band and sweep.lo_hz <= band[0] and sweep.hi_hz >= band[1]:
+            view = (float(band[0]), float(band[1]))   # scope covers the whole band: show just the band
+        else:
+            view = (sweep.lo_hz, sweep.hi_hz)
+        if view != self.view:
+            self.view = view
+            self._reset()
+        w = self.buf.shape[1]
+        vals = np.asarray(sweep.values, float)
+        cols = self.view[0] + (np.arange(w) + 0.5) / w * (self.view[1] - self.view[0])
+        pos = (cols - sweep.lo_hz) / (sweep.hi_hz - sweep.lo_hz) * (len(vals) - 1)
+        row = np.interp(pos, np.arange(len(vals)), vals, left=0, right=0)
+        floor = np.percentile(vals, 25)
+        line = colormap((row - floor + 3) / 70.0)
+        self.buf[1:] = self.buf[:-1]
+        self.buf[0] = line
+        self.message = ""
+        self._render()
+        self._overlay()
+
+    def set_message(self, text: str):
+        self.message = text
+        self._overlay()
+
+    def _render(self):
+        h, w, _ = self.buf.shape
+        img = tk.PhotoImage(data=f"P6 {w} {h} 255 ".encode() + self.buf.tobytes(), format="PPM")
+        if not self.find_withtag("img"):
+            self.create_image(0, self.top, image=img, anchor="nw", tags="img")
+        else:
+            self.itemconfig("img", image=img)
+        self.img = img
+
+    # -- overlay: scale, band plan, listening box ----------------------------
+
+    def _overlay(self):
+        from .bandplan import COLOURS, segments_between
+        from .radio import rf_frequency
+        self.delete("ov")
+        w, h = self._size()
+        self.create_rectangle(0, 0, w, self.top, fill="#0b0f14", outline="", tags="ov")
+        if not self.view:
+            self.create_text(w / 2, h / 2, text=self.message, fill="#9aa5b1",
+                             font=("Segoe UI", 11), tags="ov")
+            return
+        lo, hi = self.view
+        span = hi - lo
+        step = next(s for s in (1e3, 2e3, 5e3, 10e3, 25e3, 50e3, 100e3, 250e3, 1e6) if span / s <= 14)
+        f = np.ceil(lo / step) * step
+        while f <= hi:
+            x = self.hz_to_x(f)
+            self.create_line(x, self.AXIS_H - 5, x, self.AXIS_H, fill="#9aa", tags="ov")
+            anchor = "w" if x < 30 else "e" if x > w - 30 else "center"
+            self.create_text(x, 9, text=_mhz3(f), fill="#cfd8e0", anchor=anchor,
+                             font=("Consolas", 9), tags="ov")
+            f += step
+        # band-plan hints
+        label_end = -1e9
+        for s_lo, s_hi, label in sorted(segments_between(lo, hi), key=lambda t: t[1] - t[0], reverse=True):
+            x0, x1 = max(0, self.hz_to_x(s_lo)), min(w, self.hz_to_x(s_hi))
+            colour = COLOURS.get(label, "#868e96")
+            self.create_rectangle(x0, self.AXIS_H + 2, x1, self.top - 2, fill=colour, outline="", tags="ov")
+            if x1 - x0 > len(label) * 7:
+                self.create_text((x0 + x1) / 2, self.AXIS_H + self.HINT_H / 2, text=label, fill="white",
+                                 font=("Segoe UI", 8, "bold"), tags="ov")
+            elif label in ("FT8", "FT4") and x0 > label_end:
+                # narrow slot: small label just above the waterfall, without overlapping
+                self.create_text(x0, self.top + 2, text=label, fill="#b2f2bb", anchor="nw",
+                                 font=("Segoe UI", 8, "bold"), tags="ov")
+                label_end = x0 + 26
+        # the slice you're listening to
+        st = self.state
+        if st and st.ok and st.freq_hz:
+            a = rf_frequency(st.freq_hz, st.mode, 0, st.cw_pitch)
+            b = rf_frequency(st.freq_hz, st.mode, 3500, st.cw_pitch)
+            if a is not None and b is not None:
+                x0, x1 = sorted((self.hz_to_x(a), self.hz_to_x(b)))
+                x1 = max(x1, x0 + 2)
+                self.create_rectangle(x0, self.top, x1, h - 1, outline="#ffffff", width=1,
+                                      dash=(3, 2), tags="ov")
+            xd = self.hz_to_x(st.freq_hz)
+            self.create_line(xd, self.top, xd, h, fill="#ff4040", width=1, tags="ov")
+        if self.hover is not None:
+            hz = self.x_to_hz(self.hover)
+            self.create_line(self.hover, self.top, self.hover, h, fill="#ffff66", dash=(2, 3), tags="ov")
+            tip = _mhz3(hz) + (" - click to tune" if self.on_click else "")
+            anchor = "w" if self.hover < w - 160 else "e"
+            self.create_text(self.hover + (6 if anchor == "w" else -6), self.top + 10, text=tip,
+                             fill="#ffff66", anchor=anchor, font=("Segoe UI", 9, "bold"), tags="ov")
+        if self.message:
+            self.create_text(w / 2, h - 14, text=self.message, fill="#ffa94d", font=("Segoe UI", 9), tags="ov")
+
+    def _motion(self, e):
+        self.hover = None if (e is None or not self.view) else e.x
+        self._overlay()
+
+    def _click(self, e):
+        hz = self.x_to_hz(e.x)
+        if hz is not None and self.on_click is not None:
+            self.on_click(hz)

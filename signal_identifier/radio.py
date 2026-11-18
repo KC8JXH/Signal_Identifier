@@ -77,8 +77,8 @@ format_mhz = format_freq  # older name
 def s_units_text(db: float | None) -> str:
     if db is None:
         return ""
-    if db <= 0:
-        return f"S{max(0, int(9 + db / 6 + 0.5))}"
+    if db < 5:
+        return f"S{min(9, max(0, int(9 + db / 6 + 0.5)))}"
     return f"S9+{int(db / 10 + 0.5) * 10}"
 
 
@@ -174,76 +174,208 @@ class SerialProtocol:
         return None
 
 
+@dataclass
+class ScopeSweep:
+    """One sweep of the radio's band scope."""
+    lo_hz: float
+    hi_hz: float
+    values: list          # 0..160 per point (Icom), left to right
+    out_of_range: bool = False
+
+
+def _bcd_le(v: int, nbytes: int = 5) -> bytes:
+    out = []
+    for _ in range(nbytes):
+        v, r = divmod(v, 100)
+        out.append(((r // 10) << 4) | (r % 10))
+    return bytes(out)
+
+
 class IcomCIV(SerialProtocol):
+    """Icom CI-V. A background thread reads everything the radio sends, so the
+    band-scope data stream and replies to our questions can share the cable."""
+
     MODES = {0x00: "LSB", 0x01: "USB", 0x02: "AM", 0x03: "CW", 0x04: "RTTY", 0x05: "FM",
              0x06: "WFM", 0x07: "CW-R", 0x08: "RTTY-R", 0x17: "DV", 0x22: "DD"}
     CONTROLLER = 0xE0
+    OK, NG = 0xFB, 0xFA
 
     def __init__(self, port, address: int):
         super().__init__(port)
         self.address = address
-        self._want = None
+        self._cv = threading.Condition()
+        self._replies: list[bytes] = []   # frames from the radio: cmd, data...
+        self._write_lock = threading.Lock()
+        self._scope_parts: dict[int, bytes] = {}
+        self._scope_header = None
+        self._scope: ScopeSweep | None = None
+        self._scope_time = 0.0
+        self.scope_enabled = False
+        self._running = True
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
 
-    def _frames(self, buf: bytes):
-        for raw in buf.split(b"\xfd"):
-            i = raw.find(b"\xfe\xfe")
-            if i < 0:
+    # -- low level ---------------------------------------------------------------
+
+    def _reader(self):
+        buf = b""
+        while self._running:
+            try:
+                n = getattr(self.port, "in_waiting", 0) or 1
+                chunk = self.port.read(n)
+            except Exception:
+                time.sleep(0.05)
                 continue
-            f = raw[i + 2:].lstrip(b"\xfe")
-            if len(f) >= 3:
-                yield f  # to, from, cmd, data...
+            if not chunk:
+                time.sleep(0.003)
+                continue
+            buf += chunk
+            while b"\xfd" in buf:
+                raw, buf = buf.split(b"\xfd", 1)
+                i = raw.find(b"\xfe\xfe")
+                if i < 0:
+                    continue
+                f = raw[i + 2:].lstrip(b"\xfe")
+                if len(f) < 3:
+                    continue
+                to, frm, body = f[0], f[1], f[2:]
+                # Ignore our own commands echoed back by the USB interface.
+                if frm != self.address or to not in (self.CONTROLLER, 0x00):
+                    continue
+                if body[:2] == b"\x27\x00":
+                    self._scope_frame(body[3:])   # 27 00 00(main scope) seq max ...
+                    continue
+                with self._cv:
+                    self._replies.append(body)
+                    del self._replies[:-50]
+                    self._cv.notify_all()
 
-    def _reply(self, buf: bytes, cmd: int):
-        for f in self._frames(buf):
-            to, frm, c = f[0], f[1], f[2]
-            # Skip our own command echoed back by the USB interface.
-            if frm == self.address and to in (self.CONTROLLER, 0x00) and c == cmd:
-                return f[3:]
-        return None
+    def _send(self, body: bytes, match, timeout: float = 0.5):
+        """Send a command and wait for the radio's reply that `match` accepts."""
+        with self._cv:
+            self._replies.clear()
+        with self._write_lock:
+            self.port.write(bytes([0xFE, 0xFE, self.address, self.CONTROLLER]) + body + b"\xfd")
+        end = time.monotonic() + timeout
+        with self._cv:
+            while True:
+                for r in self._replies:
+                    if match(r):
+                        self._replies.remove(r)
+                        return r
+                left = end - time.monotonic()
+                if left <= 0:
+                    return None
+                self._cv.wait(left)
 
-    def _command(self, cmd: int) -> bytes | None:
-        msg = bytes([0xFE, 0xFE, self.address, self.CONTROLLER, cmd, 0xFD])
-        self._want = cmd
-        buf = self._ask(msg, until=b"\xfd", timeout=0.5)
-        return self._reply(buf, cmd)
+    def _query(self, cmd: int, sub: int | None = None, timeout: float = 0.5) -> bytes | None:
+        head = bytes([cmd]) if sub is None else bytes([cmd, sub])
+        r = self._send(head, lambda b: b[:len(head)] == head, timeout)
+        return r[len(head):] if r is not None else None
 
-    def _complete(self, buf: bytes) -> bool:
-        return self._reply(buf, self._want) is not None
+    def _set(self, body: bytes, timeout: float = 0.5) -> bool:
+        r = self._send(body, lambda b: b[:1] in (bytes([self.OK]), bytes([self.NG])), timeout)
+        return r is not None and r[0] == self.OK
+
+    # -- reading -----------------------------------------------------------------
 
     def read(self):
-        data = self._command(0x03)
+        data = self._query(0x03)
         freq = _bcd_le_to_int(data[:5]) if data and len(data) >= 4 else None
-        mdata = self._command(0x04)
+        mdata = self._query(0x04)
         mode = self.MODES.get(mdata[0], f"mode {mdata[0]:02X}") if mdata else ""
         if mode in ("USB", "LSB"):
-            # Data mode (USB-D) on newer Icoms; ignore if the radio doesn't support it.
-            d = self._command_sub(0x1A, 0x06)
+            # Data mode (USB-D) on newer Icoms; ignored if the radio doesn't support it.
+            d = self._query(0x1A, 0x06, timeout=0.3)
             if d and d[0] != 0:
                 mode += "-D"
         return freq, mode
 
     def read_smeter(self):
-        d = self._command_sub(0x15, 0x02, timeout=0.15)
+        d = self._query(0x15, 0x02, timeout=0.2)
         if not d or len(d) < 2:
             return None
         raw = _bcd_be_to_int(d[:2])  # 0000 = S0, 0120 = S9, 0241 = S9+60
         return icom_meter_db(raw)
 
     def read_cw_pitch(self):
-        d = self._command_sub(0x14, 0x09)
+        d = self._query(0x14, 0x09, timeout=0.3)
         if not d or len(d) < 2:
             return None
         raw = _bcd_be_to_int(d[:2])  # 0000-0255 = 300-900 Hz
         return round((300 + raw * 600 / 255) / 5) * 5
 
-    def _command_sub(self, cmd: int, sub: int, timeout: float = 0.3) -> bytes | None:
-        msg = bytes([0xFE, 0xFE, self.address, self.CONTROLLER, cmd, sub, 0xFD])
-        self._want = cmd
-        buf = self._ask(msg, until=b"\xfd", timeout=timeout)
-        r = self._reply(buf, cmd)
-        if r and len(r) >= 2 and r[0] == sub:
-            return r[1:]
+    # -- band scope ----------------------------------------------------------------
+
+    def _scope_frame(self, d: bytes):
+        """27 00 data: [seq][seq_max] then header (first part) or points."""
+        if len(d) < 2:
+            return
+        seq, seq_max = _bcd_be_to_int(d[:1]), _bcd_be_to_int(d[1:2])
+        rest = d[2:]
+        if seq == 1:
+            if len(rest) < 11:
+                return
+            mode = rest[0]
+            f1 = _bcd_le_to_int(rest[1:6])
+            f2 = _bcd_le_to_int(rest[6:11])
+            oor = len(rest) > 11 and rest[11] == 1
+            if mode == 0:     # centre mode: frequency +/- span
+                lo, hi = f1 - f2, f1 + f2
+            else:             # fixed mode: lower and upper edge
+                lo, hi = f1, f2
+            self._scope_header = (lo, hi, oor)
+            self._scope_parts = {}
+            if seq_max == 1:  # everything in one frame (some radios / LAN)
+                self._finish_scope(rest[12:])
+            return
+        if self._scope_header is None:
+            return
+        self._scope_parts[seq] = rest
+        if seq == seq_max:
+            pts = b"".join(self._scope_parts.get(i, b"") for i in range(2, seq_max + 1))
+            self._finish_scope(pts)
+
+    def _finish_scope(self, pts: bytes):
+        lo, hi, oor = self._scope_header
+        if pts and hi > lo:
+            with self._cv:
+                self._scope = ScopeSweep(float(lo), float(hi), list(pts), oor)
+                self._scope_time = time.monotonic()
+        self._scope_parts = {}
+
+    def enable_scope(self, on: bool = True) -> bool:
+        ok = True
+        if on:
+            ok = self._set(b"\x27\x10\x01")           # scope on
+        ok = self._set(b"\x27\x11" + (b"\x01" if on else b"\x00")) and ok   # send data over USB
+        self.scope_enabled = on and ok
+        return ok
+
+    def scope_whole_span(self) -> bool:
+        """Centre mode, widest span (+/-500 kHz): covers a whole band around the VFO."""
+        a = self._set(b"\x27\x14\x00\x00")
+        b = self._set(b"\x27\x15\x00" + _bcd_le(500_000))
+        return a and b
+
+    def latest_scope(self, max_age: float = 2.0) -> ScopeSweep | None:
+        with self._cv:
+            if self._scope is not None and time.monotonic() - self._scope_time <= max_age:
+                return self._scope
         return None
+
+    # -- tuning (the only thing we ever change) ---------------------------------
+
+    def set_freq(self, hz: float) -> bool:
+        return self._set(b"\x05" + _bcd_le(int(round(hz))))
+
+    def close(self):
+        if self.scope_enabled:
+            try:
+                self.enable_scope(False)
+            except Exception:
+                pass
+        self._running = False
 
 
 def icom_meter_db(raw: int) -> float:
@@ -452,10 +584,20 @@ class RadioPoller:
         self.state = RadioState(message="Connecting…")
         self.running = True
         self.lock = threading.Lock()
+        self._tune_to = None
+        self._scope_cmd = None
+        self.scope_message = ""
+        self.has_scope = hasattr(protocol, "latest_scope")
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
     def _run(self):
+        if self.has_scope:
+            try:
+                if not self.protocol.enable_scope(True):
+                    self.scope_message = "The radio didn't accept the band-scope request."
+            except Exception as e:
+                self.scope_message = f"Band scope problem: {e}"
         fails = 0
         last_full = 0.0
         last_pitch = -1e9
@@ -463,6 +605,7 @@ class RadioPoller:
         pitch = None
         while self.running:
             now = time.monotonic()
+            self._do_requests()
             if now - last_full >= self.interval:
                 last_full = now
                 try:
@@ -498,6 +641,36 @@ class RadioPoller:
             if fails >= 2 or not self.state.ok:
                 self.state = RadioState(None, "", False, msg)
 
+    def _do_requests(self):
+        with self.lock:
+            hz, self._tune_to = self._tune_to, None
+            sc, self._scope_cmd = self._scope_cmd, None
+        if hz and hasattr(self.protocol, "set_freq"):
+            try:
+                if self.protocol.set_freq(hz):
+                    with self.lock:
+                        self.state.freq_hz = hz
+            except Exception:
+                pass
+        if sc == "whole" and hasattr(self.protocol, "scope_whole_span"):
+            try:
+                if not self.protocol.scope_whole_span():
+                    self.scope_message = "The radio didn't accept the scope span change."
+            except Exception as e:
+                self.scope_message = f"Band scope problem: {e}"
+
+    def tune(self, hz: float):
+        """Ask the radio to move to `hz` (done in the background)."""
+        with self.lock:
+            self._tune_to = float(round(hz / 10) * 10)
+
+    def scope_whole_band(self):
+        with self.lock:
+            self._scope_cmd = "whole"
+
+    def scope(self):
+        return self.protocol.latest_scope() if self.has_scope else None
+
     def get(self) -> RadioState:
         with self.lock:
             st = self.state
@@ -505,6 +678,15 @@ class RadioPoller:
 
     def stop(self):
         self.running = False
+        try:
+            self.thread.join(timeout=1.5)
+        except Exception:
+            pass
+        if hasattr(self.protocol, "close"):
+            try:
+                self.protocol.close()
+            except Exception:
+                pass
         if self.serial_port is not None:
             try:
                 self.serial_port.close()

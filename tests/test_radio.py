@@ -16,19 +16,30 @@ class FakeSerial:
         self.responder = responder
         self.inbox = b""
         self.dtr = self.rts = True
+        self.lock = threading.Lock()
+        self.written = []
 
     def reset_input_buffer(self):
-        self.inbox = b""
+        with self.lock:
+            self.inbox = b""
 
     def write(self, data):
-        self.inbox += self.responder(bytes(data))
+        self.written.append(bytes(data))
+        reply = self.responder(bytes(data))
+        with self.lock:
+            self.inbox += reply
+
+    def push(self, data):  # the radio sending something on its own
+        with self.lock:
+            self.inbox += data
 
     @property
     def in_waiting(self):
         return len(self.inbox)
 
     def read(self, n=1):
-        out, self.inbox = self.inbox[:n], self.inbox[n:]
+        with self.lock:
+            out, self.inbox = self.inbox[:n], self.inbox[n:]
         return out
 
     def close(self):
@@ -55,6 +66,8 @@ def ic7300(freq=14074000, mode=0x01, data=1, echo=True, meter=120, pitch=128):
             reply += b"\xfe\xfe\xe0\x94\x15\x02" + bytes([meter // 100, ((meter // 10 % 10) << 4) | meter % 10]) + b"\xfd"
         elif c == 0x14 and cmd[5] == 0x09:
             reply += b"\xfe\xfe\xe0\x94\x14\x09" + bytes([pitch // 100, ((pitch // 10 % 10) << 4) | pitch % 10]) + b"\xfd"
+        elif c == 0x05 or (c == 0x27 and cmd[5] in (0x10, 0x11, 0x14, 0x15)):
+            reply += b"\xfe\xfe\xe0\x94\xfb\xfd"
         elif c == 0x1A and cmd[5] == 0x06:
             reply += b"\xfe\xfe\xe0\x94\x1a\x06" + bytes([data, 1 if data else 0]) + b"\xfd"
         return reply
@@ -190,3 +203,49 @@ def test_poller_reports_state():
         assert st.smeter_db is not None and abs(st.smeter_db) < 1
     finally:
         p.stop()
+
+
+def scope_frames(lo, hi, values, centre=False, parts=11):
+    """Build the 27 00 frames an IC-7300 sends for one scope sweep."""
+    def bcd(n):
+        return bytes([((n // 10) << 4) | (n % 10)])
+    if centre:
+        f1, f2, mode = (lo + hi) // 2, (hi - lo) // 2, 0
+    else:
+        f1, f2, mode = lo, hi, 1
+    out = [b"\xfe\xfe\xe0\x94\x27\x00\x00" + bcd(1) + bcd(parts) + bytes([mode])
+           + R._bcd_le(f1) + R._bcd_le(f2) + b"\x00\xfd"]
+    chunks = [bytes(values[i:i + 50]) for i in range(0, len(values), 50)]
+    for k, ch in enumerate(chunks, start=2):
+        out.append(b"\xfe\xfe\xe0\x94\x27\x00\x00" + bcd(k) + bcd(parts) + ch + b"\xfd")
+    return b"".join(out)
+
+
+@pytest.mark.parametrize("centre", [False, True])
+def test_icom_band_scope(centre):
+    fs = FakeSerial(ic7300())
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    assert proto.enable_scope(True)
+    vals = [i % 160 for i in range(475)]
+    fs.push(scope_frames(14_000_000, 14_350_000, vals, centre=centre))
+    import time
+    for _ in range(50):
+        sw = proto.latest_scope()
+        if sw:
+            break
+        time.sleep(0.02)
+    assert sw.lo_hz == 14_000_000 and sw.hi_hz == 14_350_000
+    assert sw.values == vals
+    # replies to questions still work while scope data is flowing
+    fs.push(scope_frames(14_000_000, 14_350_000, vals))
+    assert proto.read() == (14074000, "USB-D")
+    proto.close()
+
+
+def test_icom_tune_and_span():
+    fs = FakeSerial(ic7300())
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    assert proto.set_freq(14_074_000)
+    assert b"\xfe\xfe\x94\xe0\x05" + R._bcd_le(14_074_000) + b"\xfd" in fs.written
+    assert proto.scope_whole_span()
+    proto.close()

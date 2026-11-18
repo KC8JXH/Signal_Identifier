@@ -45,12 +45,15 @@ easiest to recognise after a full 15-second cycle.
 The program can read the dial frequency, mode and S-meter from your radio.
 With that you get:
 
-- a radio-style frequency display, laid out like the IC-7300's (**14.074.00**)
-- an analog **S-meter**
-- each signal shown at its real on-air frequency, e.g. **FT8 at 14.075.22**
+- UTC time, frequency (laid out like the IC-7300's, **14.074.00**) and mode
+  in the top right corner
+- an **S-meter** bar next to the audio level
 - the waterfall scale labelled in radio frequencies
+- on Icom radios, a **whole-band view** from the radio's own band scope (see below)
 
-It only *reads* from the radio and never changes anything or transmits.
+It never transmits. The only thing it ever changes on the radio is the
+frequency, and only when you click the whole-band view with "Click to tune"
+switched on.
 
 **IC-7300, step by step**
 
@@ -60,14 +63,35 @@ It only *reads* from the radio and never changes anything or transmits.
 2. In the **Radio** list choose **Icom IC-7300**.
 3. In **Port**, pick the entry that says **Silicon Labs CP210x … (COMx)**
    (it's usually picked for you). Press **↻** if the list is empty.
-4. Leave **Speed** at **115200**. On the radio, **MENU → SET → Connectors →
-   CI-V → CI-V USB Baud Rate** should be **115200** or **Auto**.
+4. Leave **Speed** at **115200**. On the radio, go to **MENU → SET →
+   Connectors → CI-V** and set:
+   - **CI-V USB Baud Rate**: **115200**
+   - **CI-V USB Port**: **Unlink from [REMOTE]** (needed for the whole-band view)
 5. Press **Connect radio**. The frequency and mode appear above the results.
    Next time it reconnects automatically.
 
 Also supported: other Icoms (IC-705, IC-7610, IC-9700, IC-7100, …), Yaesu
 (FT-991A, FT-891, FT-710, FTDX10/101, FT-817/818/857/897), Kenwood and
 Elecraft. Set **Speed** to match the CAT rate set in your radio's menu.
+
+### Whole-band view (Icom radios)
+
+The strip above the detailed waterfall shows the whole band from the radio's
+built-in spectrum scope, with coloured hints for where CW, FT8, FT4, RTTY and
+SSB are usually found (US band plan). The dashed box is the slice you're
+listening to, which is what the detailed waterfall shows and what the program
+identifies.
+
+- **Click a signal** to tune the radio there (turn off "Click to tune the
+  radio" if you don't want that). Clicking in an FT8/FT4 area tunes to the
+  standard dial frequency; in CW mode it tunes right onto the signal.
+- **Show whole band** switches the radio's scope to centre mode, ±500 kHz,
+  which covers any band up to 500 kHz wide. Or set the scope to Fixed mode
+  with the band edges on the radio itself; the program shows whatever the
+  scope shows.
+- The scope only has 475 points across the screen (about 700 Hz each on
+  20 m), so it shows *where* signals are. Identifying the mode still needs
+  them to be in the detailed (audio) view.
 
 **Using WSJT-X at the same time?** Only one program can use the radio's COM
 port at once. To share it, run **flrig** (free), point both WSJT-X and this

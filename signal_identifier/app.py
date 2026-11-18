@@ -13,11 +13,10 @@ import numpy as np
 
 from . import radio as R
 from .classify import F_HI, analyze
-from .widgets import SMeter, Waterfall
+from .widgets import BandScope, Waterfall, meter_fraction
 
 WINDOW_SECONDS = 15.0   # how much recent audio each analysis looks at
 ANALYSE_EVERY_MS = 1000
-RESULT_LINES = 6        # fixed number of result lines, so the window never jumps
 SETTINGS_FILE = Path.home() / ".signal_identifier.json"
 
 MODE_INFO = {
@@ -175,17 +174,36 @@ class App:
         self.source = None
         self.radio = None
         self.last_result = None
+        self.meter_pos = 0.0
         self.settings = load_settings()
         root.title("Signal Identifier")
 
-        # Fixed starting size (wide waterfall), never resized by the program itself.
+        # Fixed starting size, never resized by the program itself.
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         w, h = min(1280, sw - 40), min(820, sh - 80)
         root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
-        root.minsize(800, 600)
+        root.minsize(900, 600)
+
+        header = tk.Frame(root)
+        header.pack(fill="x")
+
+        # -- upper right: UTC time, frequency, mode (stacked)
+        info = tk.Frame(header, bg="#0b0f14", padx=14, pady=6)
+        info.pack(side="right", anchor="n", padx=8, pady=8)
+        self.utc_lbl = tk.Label(info, text="", font=("Consolas", 12), bg="#0b0f14", fg="#8a96a3", anchor="e")
+        self.utc_lbl.pack(fill="x")
+        self.lcd_freq = tk.Label(info, text="--.---.--", font=("Consolas", 20, "bold"),
+                                 bg="#0b0f14", fg="#4a5560", anchor="e", width=10)
+        self.lcd_freq.pack(fill="x")
+        self.lcd_mode = tk.Label(info, text="", font=("Consolas", 13, "bold"),
+                                 bg="#0b0f14", fg="#39c5ff", anchor="e")
+        self.lcd_mode.pack(fill="x")
+
+        controls = tk.Frame(header)
+        controls.pack(side="left", fill="x", expand=True)
 
         # -- row 1: sound input
-        top = ttk.Frame(root, padding=(8, 8, 8, 2))
+        top = ttk.Frame(controls, padding=(8, 8, 8, 2))
         top.pack(fill="x")
         ttk.Label(top, text="Sound input:", width=12).pack(side="left")
         self.device_box = ttk.Combobox(top, width=52, state="readonly")
@@ -195,14 +213,14 @@ class App:
         ttk.Button(top, text="Demo", command=self.start_demo).pack(side="left", padx=6)
 
         # -- row 2: radio (CAT) connection
-        rrow = ttk.Frame(root, padding=(8, 2))
+        rrow = ttk.Frame(controls, padding=(8, 2))
         rrow.pack(fill="x")
         ttk.Label(rrow, text="Radio:", width=12).pack(side="left")
-        self.radio_box = ttk.Combobox(rrow, values=list(R.RADIOS), width=30, state="readonly")
+        self.radio_box = ttk.Combobox(rrow, values=list(R.RADIOS), width=28, state="readonly")
         self.radio_box.pack(side="left", padx=6)
         self.radio_box.bind("<<ComboboxSelected>>", self._radio_changed)
         ttk.Label(rrow, text="Port:").pack(side="left")
-        self.port_box = ttk.Combobox(rrow, width=34, state="readonly")
+        self.port_box = ttk.Combobox(rrow, width=26, state="readonly")
         self.port_box.pack(side="left", padx=4)
         ttk.Button(rrow, text="↻", width=3, command=self._fill_ports).pack(side="left")
         ttk.Label(rrow, text="Speed:").pack(side="left", padx=(8, 0))
@@ -211,49 +229,39 @@ class App:
         self.radio_btn = ttk.Button(rrow, text="Connect radio", command=self.toggle_radio)
         self.radio_btn.pack(side="left", padx=6)
 
-        # -- status + level
-        self.status = ttk.Label(root, text="Pick the sound input your radio is plugged into, then press Start listening.",
+        # -- row 3: status
+        self.status = ttk.Label(controls, text="Pick the sound input your radio is plugged into, then press Start listening.",
                                 padding=(8, 2))
         self.status.pack(fill="x")
-        lvl = ttk.Frame(root, padding=(8, 2))
+
+        # -- row 4: audio level and S-meter bars side by side
+        lvl = ttk.Frame(controls, padding=(8, 2, 8, 6))
         lvl.pack(fill="x")
         ttk.Label(lvl, text="Audio level:", width=12).pack(side="left")
-        self.level = ttk.Progressbar(lvl, length=220, maximum=100)
+        self.level = ttk.Progressbar(lvl, length=200, maximum=100)
         self.level.pack(side="left", padx=6)
-        self.level_text = ttk.Label(lvl, text="", width=40)
+        self.level_text = ttk.Label(lvl, text="", width=26)
         self.level_text.pack(side="left")
+        ttk.Label(lvl, text="S-meter:").pack(side="left", padx=(12, 0))
+        self.smeter = ttk.Progressbar(lvl, length=200, maximum=100)
+        self.smeter.pack(side="left", padx=6)
+        self.smeter_text = ttk.Label(lvl, text="", width=12)
+        self.smeter_text.pack(side="left")
 
-        # -- radio display + S-meter on the right, results on the left (fixed heights)
-        head = tk.Frame(root, padx=8, pady=4)
-        head.pack(fill="x")
-        right = tk.Frame(head)
-        right.pack(side="right", anchor="n", padx=(8, 0))
-        self.smeter = SMeter(right)
-        self.smeter.pack()
-        left = tk.Frame(head)
-        left.pack(side="left", fill="x", expand=True, anchor="n")
+        # -- whole-band view
+        bandbar = ttk.Frame(root, padding=(8, 2))
+        bandbar.pack(fill="x")
+        ttk.Label(bandbar, text="Whole band (from the radio's scope)", font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.click_tune = tk.BooleanVar(value=self.settings.get("click_to_tune", True))
+        ttk.Checkbutton(bandbar, text="Click to tune the radio", variable=self.click_tune,
+                        command=self._save_click_tune).pack(side="left", padx=12)
+        ttk.Button(bandbar, text="Show whole band", command=self._whole_band).pack(side="left")
+        bf = tk.Frame(root, padx=8)
+        bf.pack(fill="x")
+        self.band = BandScope(bf, on_click=self._band_click)
+        self.band.pack(fill="x")
 
-        lcd = tk.Frame(left, bg="#0b0f14", padx=12, pady=4)
-        lcd.pack(fill="x")
-        self.lcd_freq = tk.Label(lcd, text="--.---.--", font=("Consolas", 30, "bold"),
-                                 bg="#0b0f14", fg="#4a5560", anchor="w", width=11)
-        self.lcd_freq.pack(side="left")
-        self.lcd_mode = tk.Label(lcd, text="", font=("Consolas", 18, "bold"),
-                                 bg="#0b0f14", fg="#39c5ff", anchor="w", width=8)
-        self.lcd_mode.pack(side="left", padx=(10, 0))
-        self.lcd_msg = tk.Label(lcd, text="Radio not connected", font=("Segoe UI", 10),
-                                bg="#0b0f14", fg="#8a96a3", anchor="w")
-        self.lcd_msg.pack(side="left", padx=(12, 0), fill="x", expand=True)
-
-        self.big = tk.Label(left, text="Not listening", font=("Segoe UI", 22, "bold"), anchor="w")
-        self.big.pack(fill="x")
-        self.lines = []
-        for _ in range(RESULT_LINES - 1):
-            lab = tk.Label(left, text="", anchor="w", font=("Segoe UI", 11))
-            lab.pack(fill="x")
-            self.lines.append(lab)
-
-        # -- waterfall fills the rest of the window
+        # -- detailed audio waterfall fills the rest of the window
         wf = tk.Frame(root, padx=8, pady=8)
         wf.pack(fill="both", expand=True)
         self.wf = Waterfall(wf, fmax=F_HI)
@@ -265,10 +273,67 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.quit)
         root.after(ANALYSE_EVERY_MS, self.tick)
         root.after(100, self.level_tick)
-        root.after(300, self.radio_tick)
+        root.after(200, self.radio_tick)
         root.after(80, self.wf_tick)
+        root.after(100, self.band_tick)
+        self.clock_tick()
         if demo:
             root.after(200, self.start_demo)
+
+    # -- clock, band view ---------------------------------------------------------
+
+    def clock_tick(self):
+        self.utc_lbl.config(text=time.strftime("%H:%M:%S UTC", time.gmtime()))
+        self.root.after(250, self.clock_tick)
+
+    def band_tick(self):
+        try:
+            if self.radio is not None and self.radio.has_scope:
+                st = self.radio.get()
+                self.band.update_scope(self.radio.scope(), st if st.ok else None)
+                if self.band.last_sweep is None and time.monotonic() - self.radio_started > 6:
+                    self.band.set_message(self.radio.scope_message or
+                                          "No band-scope data from the radio yet. On the IC-7300: MENU > SET > "
+                                          "Connectors > CI-V: CI-V USB Port = Unlink from [REMOTE], "
+                                          "CI-V USB Baud Rate = 115200.")
+            elif self.radio is not None:
+                self.band.set_message("The whole-band view needs an Icom radio (IC-7300, IC-705, IC-7610, IC-9700).")
+            else:
+                self.band.set_message("Connect an Icom radio (like the IC-7300) to see the whole band here.")
+        except Exception as e:
+            self.band.set_message(f"Band view problem: {e}")
+        self.root.after(100, self.band_tick)
+
+    def _save_click_tune(self):
+        self.settings["click_to_tune"] = bool(self.click_tune.get())
+        save_settings(self.settings)
+
+    def _band_click(self, hz: float):
+        from .bandplan import digital_dial_at
+        if not self.click_tune.get() or self.radio is None:
+            return
+        st = self.radio.get()
+        if not st.ok:
+            return
+        mode = st.mode.upper()
+        slot = digital_dial_at(hz)
+        if mode.startswith("CW"):
+            dial = hz                      # CW: tune right onto the signal
+        elif slot and not mode.startswith("LSB"):
+            dial = slot[1]                 # FT8/FT4 area: the standard dial frequency
+        elif "LSB" in mode or mode.endswith("-L"):
+            dial = hz + 1500               # put the signal in the middle of the audio
+        else:
+            dial = hz - 1500
+        self.radio.tune(dial)
+        self.status.config(text=f"Tuning the radio to {R.format_freq(round(dial / 10) * 10)}")
+
+    def _whole_band(self):
+        if self.radio is None or not self.radio.has_scope:
+            messagebox.showinfo("Signal Identifier", "Connect an Icom radio first.")
+            return
+        self.radio.scope_whole_band()
+        self.status.config(text="Set the radio's scope to centre mode, ±500 kHz, so the whole band is visible.")
 
     # -- sound devices ---------------------------------------------------------
 
@@ -362,6 +427,7 @@ class App:
             messagebox.showerror("Signal Identifier", f"Couldn't open the radio on {port}:\n\n{e}{hint}")
             return
         self.radio = R.RadioPoller(protocol, sp)
+        self.radio_started = time.monotonic()
         self.radio_btn.config(text="Disconnect radio")
         self.settings.update(radio=name, radio_port=port, radio_baud=self.baud_box.get(),
                              radio_autoconnect=True)
@@ -372,24 +438,30 @@ class App:
             st = self.radio.get()
             if st.ok:
                 self.lcd_freq.config(text=st.freq_text(), fg="#f2f2f2")
-                self.lcd_mode.config(text=st.mode)
-                pitch = f"CW pitch {st.cw_pitch:.0f} Hz" if st.cw_pitch and st.mode.upper().startswith("CW") else ""
-                self.lcd_msg.config(text=pitch, fg="#8a96a3")
-                self.smeter.set(st.smeter_db, True)
+                self.lcd_mode.config(text=st.mode, fg="#39c5ff")
+                if st.cw_pitch and st.mode.upper().startswith("CW"):
+                    self.lcd_mode.config(text=f"{st.mode}  pitch {st.cw_pitch:.0f}")
+                self._set_meter(st.smeter_db, "" if st.smeter_db is not None else "not available")
                 self.wf.set_dial((st.freq_hz, st.mode, st.cw_pitch))
             else:
                 self.lcd_freq.config(text="--.---.--", fg="#4a5560")
-                self.lcd_mode.config(text="")
-                self.lcd_msg.config(text=st.message, fg="#ff8787")
-                self.smeter.set(None, True)
+                self.lcd_mode.config(text="no answer", fg="#ff8787")
+                self.status.config(text=st.message)
+                self._set_meter(None, "")
                 self.wf.set_dial(None)
         else:
             self.lcd_freq.config(text="--.---.--", fg="#4a5560")
-            self.lcd_mode.config(text="")
-            self.lcd_msg.config(text="Radio not connected", fg="#8a96a3")
-            self.smeter.set(None, False)
+            self.lcd_mode.config(text="no radio", fg="#8a96a3")
+            self._set_meter(None, "no radio")
             self.wf.set_dial(None)
-        self.root.after(200, self.radio_tick)
+        self.root.after(100, self.radio_tick)
+
+    def _set_meter(self, db, note: str):
+        goal = meter_fraction(db) * 100
+        # quick to rise, slower to fall, like a real meter
+        self.meter_pos += (goal - self.meter_pos) * (0.6 if goal > self.meter_pos else 0.2)
+        self.smeter["value"] = self.meter_pos
+        self.smeter_text.config(text=R.s_units_text(db) if db is not None else note)
 
     def wf_tick(self):
         try:
@@ -431,14 +503,12 @@ class App:
         save_settings(self.settings)
         self.start_btn.config(text="Stop")
         self.status.config(text=f"Listening to {self.devices[k][1]}. Results appear after a few seconds.")
-        self.big.config(text="Listening…", fg="black")
 
     def start_demo(self):
         self.stop()
         self.source = DemoSource()
         self.start_btn.config(text="Stop")
         self.status.config(text="DEMO: playing made-up signals, changing every 20 seconds.")
-        self.big.config(text="Listening…", fg="black")
 
     def stop(self):
         if self.source is not None:
@@ -446,7 +516,6 @@ class App:
         self.source = None
         self.last_result = None
         self.start_btn.config(text="Start listening")
-        self.big.config(text="Not listening", fg="black")
         self._show([])
         self.wf.clear()
 
@@ -484,49 +553,18 @@ class App:
                     self.last_result = analyze(audio, self.source.rate, keep_spectrogram=False)
                     self._show(self.last_result.detections, secs)
                 else:
-                    self.big.config(text=f"Listening… ({secs:.0f} s)")
+                    self.status.config(text=f"Listening… gathering audio ({secs:.0f} s)")
         except Exception as e:
             self.status.config(text=f"Problem analysing audio: {e}")
         self.root.after(ANALYSE_EVERY_MS, self.tick)
 
-    def _rf(self, d, st):
-        return R.rf_frequency(st.freq_hz, st.mode, d.freq_hz, st.cw_pitch) if st else None
-
-    def _describe(self, d, st) -> str:
-        rf = self._rf(d, st)
-        if rf:
-            s = f"{d.mode} at {R.format_freq(rf)}"
-            if d.detail:
-                s += f" ({d.detail})"
-            return s
-        return d.describe()
-
     def _show(self, dets, secs: float = 0):
-        for lab in self.lines:
-            lab.config(text="")
-        self.wf.set_markers([])
-        if self.source is None:
+        """Label each signal on the waterfall with its mode."""
+        if self.source is None or not dets:
+            self.wf.set_markers([])
             return
-        if not dets:
-            self.big.config(text="Nothing heard (just noise)", fg="#555")
-            return
-        st = self._radio_state()
-        best = max(dets, key=lambda d: d.confidence * (1 + d.strength_db / 30))
-        self.big.config(text=self._describe(best, st), fg=MODE_INFO.get(best.mode, ("", "black"))[1])
-        ranked = sorted(dets, key=lambda d: -d.confidence)
-        n_lines = len(self.lines)
-        n_show = n_lines - 1 if len(ranked) > n_lines else n_lines
-        for lab, d in zip(self.lines, ranked[:n_show]):
-            info, colour = MODE_INFO.get(d.mode, ("", "black"))
-            sure = "very likely" if d.confidence >= 0.8 else "likely" if d.confidence >= 0.6 else "maybe"
-            audio = f", {d.freq_hz:,.0f} Hz audio" if self._rf(d, st) else ""
-            lab.config(text=f"• {self._describe(d, st)}: {info} [{sure}{audio}]", fg=colour)
-        if len(ranked) > n_lines:
-            self.lines[-1].config(text=f"… and {len(ranked) - n_show} more (see the labels on the waterfall)",
-                                  fg="#555")
-        elif secs and secs < 12:
-            self.lines[-1].config(text="(Still gathering audio; FT8 is clearest after 15 seconds.)", fg="#777")
-        self.wf.set_markers([(d.freq_hz, d.mode, MODE_INFO.get(d.mode, ("", "white"))[1]) for d in dets])
+        self.wf.set_markers([(d.freq_hz, d.mode if d.confidence >= 0.6 else d.mode + "?",
+                              MODE_INFO.get(d.mode, ("", "white"))[1]) for d in dets])
 
 
 def main(demo: bool = False):
