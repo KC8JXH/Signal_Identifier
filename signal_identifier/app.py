@@ -388,10 +388,12 @@ class App:
         self.status.config(text=f"Tuning the radio to {R.format_freq(round(dial / 10) * 10)}")
 
     def _band_click(self, hz: float):
-        """Click in the whole-band view: the radio goes to the frequency under the pointer."""
+        """Click in the whole-band view. The scope is coarse (~700 Hz per point on
+        20 m), so bring the clicked spot into the middle of the audio (USB/LSB/
+        data) or right onto it (CW), so the signal shows in the detailed view."""
         st = self._radio_for_click()
         if st is not None:
-            self._tune(hz, st)
+            self._tune(R.tune_target(hz, st.mode, snap_digital=False), st)
 
     def _waterfall_click(self, audio_hz: float):
         """Click in the detailed waterfall: the radio goes to the frequency under the pointer."""

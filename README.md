@@ -82,9 +82,13 @@ SSB are usually found (US band plan). The dashed box is the slice you're
 listening to, which is what the detailed waterfall shows and what the program
 identifies.
 
-- **Click** in the band view or the detailed waterfall and the radio goes to
-  the frequency shown under the pointer (turn off "Click a signal to tune the
-  radio" if you don't want that).
+- **Click** in the band view to bring that spot into the detailed waterfall:
+  in USB/LSB/data modes it lands in the middle of your audio, in CW mode right
+  on your pitch. (The band scope is coarse, about 700 Hz per point on 20 m,
+  so this is the reliable way to get a signal into view.)
+- **Click** in the detailed waterfall and the radio goes to exactly the
+  frequency shown under the pointer.
+- Turn off "Click a signal to tune the radio" if you don't want clicks to tune.
 - **Show whole band** switches the radio's scope to centre mode, ±500 kHz,
   which covers any band up to 500 kHz wide. Or set the scope to Fixed mode
   with the band edges on the radio itself; the program shows whatever the

@@ -371,7 +371,7 @@ class BandScope(tk.Canvas):
         if self.hover is not None:
             hz = self.x_to_hz(self.hover)
             self.create_line(self.hover, self.top, self.hover, h, fill="#ffff66", dash=(2, 3), tags="ov")
-            tip = _mhz3(hz) + (" - click to tune" if self.on_click else "")
+            tip = _mhz3(hz) + (" - click to bring into view" if self.on_click else "")
             anchor = "w" if self.hover < w - 160 else "e"
             self.create_text(self.hover + (6 if anchor == "w" else -6), self.top + 10, text=tip,
                              fill="#ffff66", anchor=anchor, font=("Segoe UI", 9, "bold"), tags="ov")
