@@ -49,6 +49,7 @@ class Waterfall(tk.Canvas):
         self.fmax = fmax
         self.on_click = on_click   # called with the audio frequency (Hz) clicked
         self.hover = None
+        self.message = ""
         self.bind("<Button-1>", self._click)
         self.bind("<Motion>", lambda e: self._set_hover(e.x))
         self.bind("<Leave>", lambda e: self._set_hover(None))
@@ -86,6 +87,17 @@ class Waterfall(tk.Canvas):
 
     # -- data ------------------------------------------------------------------
 
+    def set_message(self, text: str):
+        """Show a note across the waterfall (e.g. when not listening)."""
+        if text == self.message and self.find_withtag("msg"):
+            return
+        self.message = text
+        self.delete("msg")
+        if text:
+            w, h = self._size()
+            self.create_text(w / 2, self.AXIS_H + (h - self.AXIS_H) / 2, text=text, fill="#9aa5b1",
+                             font=("Segoe UI", 14), tags="msg")
+
     def need_samples(self, rate: float) -> int:
         factor = max(1, int(round(rate / 12000)))
         return self.NFFT * factor + 256
@@ -112,6 +124,8 @@ class Waterfall(tk.Canvas):
         line = colormap(v)
         self.buf[1:] = self.buf[:-1]
         self.buf[0] = line
+        if self.message:
+            self.set_message("")
         self._render()
 
     def _render(self):

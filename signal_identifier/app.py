@@ -318,6 +318,8 @@ class App:
         self._fill_devices()
         self._fill_ports()
         self._restore_radio_settings()
+        if self.settings.get("listen_autostart") and self.settings.get("sound_input") == self.device_box.get():
+            root.after(700, lambda: self.toggle(quiet=True))   # carry on listening like last time
         root.protocol("WM_DELETE_WINDOW", self.quit)
         root.after(ANALYSE_EVERY_MS, self.tick)
         root.after(100, self.level_tick)
@@ -581,7 +583,11 @@ class App:
 
     def wf_tick(self):
         try:
-            if self.source is not None:
+            if self.source is None:
+                self.wf.set_message("Not listening. Press Start listening.")
+            else:
+                if self.wf.message.startswith("Not listening"):
+                    self.wf.set_message("Listening… waiting for audio")
                 need = self.wf.need_samples(self.source.rate)
                 audio = self.source.ring.tail(need)
                 if len(audio) >= need:
@@ -598,24 +604,32 @@ class App:
 
     # -- start / stop ------------------------------------------------------------
 
-    def toggle(self):
+    def toggle(self, quiet: bool = False):
         if self.source is not None:
             self.stop()
+            self.settings["listen_autostart"] = False
+            save_settings(self.settings)
             return
         k = self.device_box.current()
         if k < 0 or not self.devices:
-            messagebox.showinfo("Signal Identifier", "Pick a sound input first.")
+            if quiet:
+                self.status.config(text="Pick the sound input your radio is plugged into, then press Start listening.")
+            else:
+                messagebox.showinfo("Signal Identifier", "Pick a sound input first.")
             return
         try:
             self.source = SoundCardSource(self.devices[k][0])
         except Exception as e:
             self.source = None
-            messagebox.showerror("Signal Identifier",
-                                 f"Couldn't open that sound input:\n\n{e}\n\n"
-                                 "Try another entry in the list (the same device often appears "
-                                 "several times; the [MME] one usually works).")
+            msg = (f"Couldn't open that sound input: {e}. Try another entry in the list "
+                   "(the same device often appears several times; the [MME] one usually works).")
+            if quiet:
+                self.status.config(text=msg)
+            else:
+                messagebox.showerror("Signal Identifier", msg)
             return
         self.settings["sound_input"] = self.devices[k][1]
+        self.settings["listen_autostart"] = True
         save_settings(self.settings)
         self.start_btn.config(text="Stop listening")
         self.status.config(text=f"Listening to {self.devices[k][1]}. Results appear after a few seconds.")
