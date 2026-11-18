@@ -44,9 +44,14 @@ class Waterfall(tk.Canvas):
     NFFT = 4096
     RANGE_DB = 32.0
 
-    def __init__(self, master, fmax: float, **kw):
+    def __init__(self, master, fmax: float, on_click=None, **kw):
         super().__init__(master, bg="#000014", highlightthickness=0, width=10, height=10, **kw)
         self.fmax = fmax
+        self.on_click = on_click   # called with the audio frequency (Hz) clicked
+        self.hover = None
+        self.bind("<Button-1>", self._click)
+        self.bind("<Motion>", lambda e: self._set_hover(e.x))
+        self.bind("<Leave>", lambda e: self._set_hover(None))
         self.buf = None
         self.img = None
         self.ref = None
@@ -154,6 +159,29 @@ class Waterfall(tk.Canvas):
                 self.create_text(xx, 12, text=f"{f} Hz", fill="#cfd8e0", anchor=anchor,
                                  font=("Segoe UI", 9), tags="axis")
         self._draw_markers()
+
+    def _set_hover(self, x):
+        self.hover = x
+        self._draw_hover()
+
+    def _draw_hover(self):
+        from .radio import format_freq, rf_frequency
+        self.delete("hover")
+        if self.hover is None:
+            return
+        w, h = self._size()
+        f = self.hover / w * self.fmax
+        rf = rf_frequency(*self.dial[:2], f, self.dial[2]) if self.dial else None
+        text = (format_freq(rf) if rf else f"{f:.0f} Hz") + (" - click to tune" if self.on_click and rf else "")
+        self.create_line(self.hover, self.AXIS_H, self.hover, h, fill="#ffff66", dash=(2, 3), tags="hover")
+        anchor = "w" if self.hover < w - 180 else "e"
+        self.create_text(self.hover + (6 if anchor == "w" else -6), self.AXIS_H + 12, text=text,
+                         fill="#ffff66", anchor=anchor, font=("Segoe UI", 9, "bold"), tags="hover")
+
+    def _click(self, e):
+        if self.on_click is not None:
+            w, _ = self._size()
+            self.on_click(e.x / w * self.fmax)
 
     def set_markers(self, markers):
         """markers: list of (audio_hz, text, colour)."""

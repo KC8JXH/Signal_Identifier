@@ -91,6 +91,7 @@ class Analyzer:
     def __init__(self, audio: np.ndarray, fs: float):
         x, fs = decimate(audio, fs)
         x = x - np.mean(x) if len(x) else x
+        self.x = x
         self.fs = fs
         self.seconds = len(x) / fs
 
@@ -147,6 +148,7 @@ class Analyzer:
         # look for it on loosely merged regions before anything else.
         gap = int(120 / self.fl[1])
         remaining = []
+        regions = []
         for ra, rb in _clusters(cand, max_gap=gap):
             inside = [c for c in clusters if c[0] >= ra and c[1] <= rb]
             if not inside:
@@ -154,7 +156,14 @@ class Analyzer:
             a0, b0 = inside[0][0], inside[-1][1]
             f0, f1 = self.fl[a0], self.fl[b0]
             if f1 - f0 >= 350:
+                # Wide data bursts (many carriers lit at once) can fool the voice test.
+                d = self._data_bursts(f0, f1, need_fill=True)
+                if d is not None:
+                    dets.append(d)
+                    continue
                 score = self._voice_score(f0, f1)
+                if score >= 0.5 and self._pumped_by_keying(inside, self._last_voice_env):
+                    score = 0.0   # it's a strong CW signal pumping the AGC, not speech
                 if score >= 0.5:
                     merged = False
                     for d in dets:
@@ -171,6 +180,7 @@ class Analyzer:
                     self._voice_bands.append((f0, f1, self._last_voice_env))
                     continue
             remaining.extend(inside)
+            regions.append((f0, f1))
         clusters = remaining
 
         narrow = []
@@ -182,10 +192,165 @@ class Analyzer:
                 narrow.append((a, b))
 
         dets.extend(self._narrow_all(narrow))
+        dets = self._data_regions(dets, regions)
         dets = self._drop_shadows(dets)
+        dets = self._drop_pumping_ghosts(dets)
         dets = self._collapse_unclear(dets)
         dets.sort(key=lambda d: d.freq_hz)
         return dets
+
+    KNOWN = ("CW", "FT8", "FT4", "RTTY", "PSK31", "Carrier", "SSB voice")
+
+    def _data_regions(self, dets: list[Detection], regions) -> list[Detection]:
+        """Where nothing familiar was found, check for ARQ-style data bursts
+        (Winlink: ARDOP, VARA, PACTOR...) covering the whole region."""
+        def near_voice(f):
+            return any(lo - 600 <= f <= hi + 600 for lo, hi, _ in self._voice_bands)
+
+        for d in list(dets):
+            if d.mode.startswith("Unknown") and d.bandwidth_hz >= 100 and not near_voice(d.freq_hz):
+                nd = self._data_bursts(d.freq_hz - d.bandwidth_hz / 2, d.freq_hz + d.bandwidth_hz / 2)
+                if nd is not None:
+                    dets = [x for x in dets if x is not d] + [nd]
+        for f0, f1 in regions:
+            if f1 - f0 < 120 or near_voice((f0 + f1) / 2):
+                continue
+            inside = [d for d in dets if f0 - 60 <= d.freq_hz <= f1 + 60 and d.mode != "SSB voice"]
+            if any(d.mode in self.KNOWN and d.confidence >= 0.7 for d in inside):
+                continue
+            # measure the width from where the signal really is (not its skirts)
+            a0, b0 = int(np.searchsorted(self.fl, f0)), int(np.searchsorted(self.fl, f1))
+            if b0 > a0:
+                a0, b0 = self._core(a0, b0)
+                f0, f1 = self.fl[a0], self.fl[b0]
+            d = self._data_bursts(f0, f1)
+            if d is not None:
+                dets = [x for x in dets if x not in inside] + [d]
+        return dets
+
+    def _data_bursts(self, f_lo: float, f_hi: float, need_fill: bool = False) -> Detection | None:
+        """Blocks of data from a fraction of a second up to several seconds, with
+        sharp starts and stops and a steady level while on: the pattern of ARQ
+        data links, where stations take turns sending and acknowledging."""
+        width = f_hi - f_lo
+        if width < 120 or width > 3000:
+            return None
+        env, noise = self.band_envelope(f_lo, f_hi)
+        k = max(1, int(0.03 / self.dt_s))
+        env = 10 * np.log10(np.convolve(10 ** (env / 10), np.ones(k) / k, mode="same") + 1e-20)
+        # Background = the band's level in the gaps between bursts. (A wide
+        # signal that's on most of the time skews the general noise estimate.)
+        noise = min(noise, float(np.percentile(env, 8)) + 1.0)
+        rel = env - noise
+        peak = float(np.percentile(rel, 98))
+        if peak < 8:
+            return None
+        on = rel > max(6.0, peak - 12.0)
+        # bridge short dropouts (< 60 ms), then drop blips (< 0.2 s)
+        on = self._bridge(on, int(0.06 / self.dt_s))
+        runs_on, _ = _runs(on)
+        blocks = runs_on[runs_on * self.dt_s >= 0.2] * self.dt_s
+        if len(blocks) == 0:
+            return None
+        if blocks.max() > 9.0 or on.mean() > 0.92:
+            return None   # continuous, or FT8-length transmissions: not ARQ bursts
+        if len(blocks) < 2 and blocks.max() < 0.5:
+            return None
+        inside = rel[on]
+        if len(inside) < 20 or np.std(inside) > 4.5:
+            return None   # level jumps around while on: speech, not data
+        if np.median(inside) < 7:
+            return None   # too faint to judge
+        # Where is the signal really? Average spectrum while it's on.
+        a = int(np.searchsorted(self.fl, f_lo))
+        b = int(np.searchsorted(self.fl, f_hi))
+        if b - a >= 3:
+            t_long = (np.arange(len(self.L)) * self.hop_l + self.nfft_l / 2) / self.fs
+            on_long = on[np.clip((t_long / self.dt_s).astype(int), 0, len(on) - 1)]
+            if on_long.sum() >= 3:
+                avg = 10 * np.log10(np.mean(10 ** (self.L[on_long, a:b + 1] / 10), axis=0))
+                base = float(np.median(self.floor_l[a:b + 1]))
+                top = float(avg.max())
+                keep = np.flatnonzero(avg >= max(top - 12, base + 0.5 * (top - base)))
+                a, b = a + int(keep[0]), a + int(keep[-1])
+                f_lo, f_hi = self.fl[a], self.fl[b]
+                width = f_hi - f_lo + self.fl[1]
+        # how much of the band is lit at once while on (multi-carrier modes fill it)
+        sel = (self.fs_bins >= f_lo) & (self.fs_bins <= f_hi)
+        lit = (self.S[:, sel] > self.floor_s[sel] + 6)[on].mean() if sel.any() else 0
+        if need_fill and lit < 0.5:
+            return None
+        # tone layout, for the detail text
+        peaks, spacing = self._tone_layout(a, b)
+        if len(peaks) == 2 and _near(abs(peaks[1] - peaks[0]), (170, 200, 425, 850), 15):
+            return None   # that's an RTTY pair
+        centre = (f_lo + f_hi) / 2
+        if width < 300 and 3 <= len(peaks) <= 5 and spacing and 40 <= spacing <= 60:
+            detail, conf = f"bursts, {len(peaks)} tones ~50 Hz apart: looks like ARDOP (Winlink)", 0.75
+        elif width < 300:
+            detail, conf = f"bursts, {width:.0f} Hz wide: ARQ data (ARDOP 200 / PACTOR?)", 0.6
+        elif width < 800:
+            detail, conf = f"bursts, {width:.0f} Hz wide: ARQ data (VARA 500 / ARDOP 500 / PACTOR?)", 0.6
+        else:
+            detail, conf = f"bursts, {width:.0f} Hz wide: ARQ data (VARA / PACTOR / ARDOP 2000?)", 0.6
+        strength = float(np.percentile(rel, 90))
+        return Detection("Data bursts", centre, width, conf, detail, strength)
+
+    @staticmethod
+    def _bridge(on: np.ndarray, gap: int) -> np.ndarray:
+        on = on.copy()
+        m = on.astype(np.int8)
+        edges = np.flatnonzero(np.diff(m)) + 1
+        bounds = np.concatenate([[0], edges, [len(m)]])
+        for i in range(len(bounds) - 1):
+            st, en = bounds[i], bounds[i + 1]
+            if not on[st] and st > 0 and en < len(on) and en - st <= gap:
+                on[st:en] = True
+        return on
+
+    def _tone_layout(self, a: int, b: int):
+        """Tones a signal hops between: (tone frequencies, typical spacing).
+
+        Looks at where the strongest point sits moment by moment (~40 ms
+        steps) and finds the frequencies it keeps returning to. Works for FSK
+        modes, where one tone is on at a time.
+        """
+        f_lo, f_hi = self.fl[a], self.fl[b]
+        if f_hi - f_lo < 30 or len(self.x) < 1024:
+            return [], None
+        nfft = int(2 ** round(np.log2(self.fs / 21.5)))
+        from .dsp import stft_db
+        S = stft_db(self.x, nfft, nfft // 4)
+        f = np.fft.rfftfreq(nfft, 1 / self.fs)
+        sel = (f >= f_lo - 10) & (f <= f_hi + 10)
+        if sel.sum() < 3:
+            return [], None
+        sub = S[:, sel]
+        fsel = f[sel]
+        noise = np.percentile(sub, 20)
+        strong = sub.max(axis=1) > noise + 12
+        if strong.sum() < 20:
+            return [], None
+        sr = sub[strong]
+        k = np.argmax(sr, axis=1)
+        kk = np.clip(k, 1, sr.shape[1] - 2)
+        l, c, r = sr[np.arange(len(k)), kk - 1], sr[np.arange(len(k)), kk], sr[np.arange(len(k)), kk + 1]
+        den = l - 2 * c + r
+        off = np.clip(np.where(np.abs(den) > 1e-9, 0.5 * (l - r) / np.where(den == 0, 1, den), 0), -0.5, 0.5)
+        pf = fsel[kk] + off * (f[1] - f[0])
+        bins = np.arange(f_lo - 10, f_hi + 15, 5.0)
+        h, edges = np.histogram(pf, bins=bins)
+        h = np.convolve(h, [1, 2, 1], mode="same")
+        top = h.max()
+        pk = [i for i in range(1, len(h) - 1) if h[i] >= h[i - 1] and h[i] >= h[i + 1] and h[i] >= 0.25 * top]
+        freqs = []
+        for i in sorted(pk, key=lambda i: -h[i]):
+            fc = edges[i] + 2.5
+            if all(abs(fc - g) >= 30 for g in freqs):
+                freqs.append(fc)
+        freqs.sort()
+        spacing = float(np.median(np.diff(freqs))) if len(freqs) >= 2 else None
+        return freqs, spacing
 
     def _collapse_unclear(self, dets: list[Detection]) -> list[Detection]:
         """Several faint, unsure guesses at once usually means one weak, noisy
@@ -200,6 +365,32 @@ class Analyzer:
         keep.append(Detection("Faint signal", (lo + hi) / 2, hi - lo, 0.3,
                               "too weak or noisy to be sure, possibly weak voice",
                               max(d.strength_db for d in unclear)))
+        return keep
+
+    def _drop_pumping_ghosts(self, dets: list[Detection]) -> list[Detection]:
+        """Faint 'signals' that rise and fall exactly with a much stronger CW
+        signal's keying are the AGC pumping the background, not real signals."""
+        strong = [d for d in dets if d.mode == "CW" and d.strength_db >= 25]
+        if not strong:
+            return dets
+        k = max(1, int(0.03 / self.dt_s))
+        keep = []
+        for d in dets:
+            ghost = False
+            for c in strong:
+                if d is c or c.strength_db - d.strength_db < 15:
+                    continue
+                if c.strength_db - d.strength_db >= 35 and d.confidence < 0.8:
+                    ghost = True   # unsure and far weaker: AGC squeeze leftovers
+                    continue
+                e1, _ = self.band_envelope(c.freq_hz - c.bandwidth_hz / 2, c.freq_hz + c.bandwidth_hz / 2)
+                e2, _ = self.band_envelope(d.freq_hz - d.bandwidth_hz / 2, d.freq_hz + d.bandwidth_hz / 2)
+                e1 = np.convolve(e1, np.ones(k) / k, mode="same")
+                e2 = np.convolve(e2, np.ones(k) / k, mode="same")
+                if np.std(e1) > 0 and np.std(e2) > 0 and abs(np.corrcoef(e1, e2)[0, 1]) > 0.3:
+                    ghost = True
+            if not ghost:
+                keep.append(d)
         return keep
 
     def _drop_shadows(self, dets: list[Detection]) -> list[Detection]:
@@ -337,6 +528,29 @@ class Analyzer:
                 if d is not None:
                     dets.append(d)
         return dets
+
+    def _pumped_by_keying(self, clusters, voice_env: np.ndarray) -> bool:
+        """True if the 'syllables' follow the on/off keying of a strong narrow
+        signal in the same region (AGC pumping or key clicks from CW)."""
+        best = None
+        for a, b in clusters:
+            a, b = self._core(a, b)
+            if self.fl[b] - self.fl[a] > 60:
+                continue
+            st = self._strength(a, b)
+            if best is None or st > best[0]:
+                best = (st, a, b)
+        if best is None or best[0] < 20:
+            return False
+        _, a, b = best
+        env, noise = self.band_envelope(self.fl[a], self.fl[b])
+        if np.std(env) == 0 or np.std(voice_env) == 0:
+            return False
+        k = max(1, int(0.03 / self.dt_s))
+        e = np.convolve(env, np.ones(k) / k, mode="same")
+        v = np.convolve(voice_env, np.ones(k) / k, mode="same")
+        c = np.corrcoef(e, v)[0, 1]
+        return abs(c) > 0.3
 
     def _part_of_voice(self, a: int, b: int) -> bool:
         """True if this bit of the waterfall rises and falls with nearby speech
@@ -489,7 +703,7 @@ class Analyzer:
             conf = 0.9 if 0.25 <= on_frac <= 0.7 else 0.7
             return Detection("CW", centre, width, conf, detail, strength)
 
-        if width <= 90 and longest_blk >= 3 and psk_line:
+        if width <= 90 and longest_blk >= 3 and psk_line and strength >= 12:
             return Detection("PSK31", centre, max(width, 31), 0.75, "", strength)
 
         if 25 <= width <= 75 and 0.08 <= dwell <= 0.3 and levels >= 4 and env_spread < 8:

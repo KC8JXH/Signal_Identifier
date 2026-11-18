@@ -29,6 +29,7 @@ MODE_INFO = {
     "RTTY": ("Radioteletype. Decode with fldigi or MMTTY.", "#9c36b5"),
     "PSK31": ("Keyboard-to-keyboard chat. Decode with fldigi.", "#c2255c"),
     "Carrier": ("Steady tone", "#868e96"),
+    "Data bursts": ("ARQ data link (Winlink: ARDOP, VARA, PACTOR)", "#e8590c"),
     "Faint signal": ("Something is there, but it's too weak to identify", "#868e96"),
     "Unknown": ("Can't tell what this is yet", "#868e96"),
     "Unknown wide signal": ("Can't tell what this is yet", "#868e96"),
@@ -158,6 +159,8 @@ def marker_text(d) -> str:
     """Short label for the waterfall."""
     if d.mode.startswith("Unknown"):
         text = f"Data {d.bandwidth_hz:.0f} Hz"
+    elif d.mode == "Data bursts":
+        text = "ARDOP" if "ARDOP (Winlink)" in d.detail else f"ARQ data {d.bandwidth_hz:.0f} Hz"
     elif d.mode == "Faint signal":
         text = "Faint"
     else:
@@ -239,8 +242,7 @@ class App:
         self.device_box.pack(side="left", padx=6)
         self.start_btn = ttk.Button(top, text="Start listening", command=self.toggle)
         self.start_btn.pack(side="left")
-        ttk.Button(top, text="Demo", command=self.start_demo).pack(side="left", padx=6)
-        ttk.Button(top, text="Save recording", command=self.save_recording).pack(side="left")
+        ttk.Button(top, text="Save recording", command=self.save_recording).pack(side="left", padx=6)
 
         # -- row 2: radio (CAT) connection
         rrow = ttk.Frame(controls, padding=(8, 2))
@@ -281,9 +283,10 @@ class App:
         # -- whole-band view
         bandbar = ttk.Frame(root, padding=(8, 2))
         bandbar.pack(fill="x")
-        ttk.Label(bandbar, text="Whole band (from the radio's scope)", font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.band_title = ttk.Label(bandbar, text="Band scope", font=("Segoe UI", 9, "bold"), width=24)
+        self.band_title.pack(side="left")
         self.click_tune = tk.BooleanVar(value=self.settings.get("click_to_tune", True))
-        ttk.Checkbutton(bandbar, text="Click to tune the radio", variable=self.click_tune,
+        ttk.Checkbutton(bandbar, text="Click a signal to tune the radio", variable=self.click_tune,
                         command=self._save_click_tune).pack(side="left", padx=12)
         ttk.Button(bandbar, text="Show whole band", command=self._whole_band).pack(side="left")
         bf = tk.Frame(root, padx=8)
@@ -294,7 +297,7 @@ class App:
         # -- detailed audio waterfall fills the rest of the window
         wf = tk.Frame(root, padx=8, pady=8)
         wf.pack(fill="both", expand=True)
-        self.wf = Waterfall(wf, fmax=F_HI)
+        self.wf = Waterfall(wf, fmax=F_HI, on_click=self._waterfall_click)
         self.wf.pack(fill="both", expand=True)
 
         self._fill_devices()
@@ -318,6 +321,15 @@ class App:
 
     def band_tick(self):
         try:
+            st0 = self.radio.get() if self.radio is not None else None
+            band = None
+            if self.band.view:
+                from .bandplan import band_for
+                band = band_for(sum(self.band.view) / 2)
+            if band is None and st0 is not None and st0.ok:
+                from .bandplan import band_for
+                band = band_for(st0.freq_hz)
+            self.band_title.config(text=f"{band[2]} band" if band else "Band scope")
             if self.radio is not None and self.radio.has_scope:
                 st = self.radio.get()
                 self.band.update_scope(self.radio.scope(), st if st.ok else None)
@@ -357,6 +369,15 @@ class App:
             dial = hz - 1500
         self.radio.tune(dial)
         self.status.config(text=f"Tuning the radio to {R.format_freq(round(dial / 10) * 10)}")
+
+    def _waterfall_click(self, audio_hz: float):
+        """Click in the detailed waterfall: tune the radio onto that signal."""
+        if not self.click_tune.get() or self.radio is None:
+            return
+        st = self.radio.get()
+        rf = R.rf_frequency(st.freq_hz, st.mode, audio_hz, st.cw_pitch) if st.ok else None
+        if rf:
+            self._band_click(rf)
 
     def _whole_band(self):
         if self.radio is None or not self.radio.has_scope:
@@ -538,7 +559,7 @@ class App:
         self.stop()
         self.source = DemoSource()
         self.start_btn.config(text="Stop")
-        self.status.config(text="DEMO: playing made-up signals, changing every 20 seconds.")
+        self.status.config(text="DEMO: playing made-up signals, changing every 20 seconds.")  # (python -m signal_identifier --demo)
 
     def stop(self):
         if self.source is not None:

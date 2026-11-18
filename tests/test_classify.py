@@ -140,3 +140,24 @@ def test_other_modes_through_receiver(make, expect):
 
 def test_receiver_noise_only():
     assert modes(s.radio(noise())) == []
+
+
+# ---- Winlink-style ARQ data bursts (shapes taken from a real 40 m recording)
+
+def test_ardop_like_bursts():
+    for x in (s.ardop_4fsk() + noise(), s.radio(s.ardop_4fsk(centre=1430) + noise())):
+        dets = analyze(x, s.FS).detections
+        assert [d.mode for d in dets] == ["Data bursts"]
+        assert "ARDOP" in dets[0].detail
+
+
+def test_500hz_data_bursts():
+    dets = analyze(s.radio(s.ofdm_data(centre=2180) + noise()), s.FS).detections
+    assert [d.mode for d in dets] == ["Data bursts"]
+    assert 380 <= dets[0].bandwidth_hz <= 650
+
+
+def test_two_data_links_at_once():
+    x = s.radio(s.ardop_4fsk(centre=1430) + s.ofdm_data(centre=2180) + noise())
+    m = [d for d in analyze(x, s.FS).detections if d.mode == "Data bursts"]
+    assert len(m) == 2

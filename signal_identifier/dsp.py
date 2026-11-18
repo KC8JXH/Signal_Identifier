@@ -53,14 +53,22 @@ def passband_mask(spec_db: np.ndarray, freqs: np.ndarray, f_lo: float = 100, f_h
     hiss). We find the level of the band noise inside the filter and keep
     every frequency within 15 dB of it.
     """
-    med = np.median(spec_db, axis=0)
     df = freqs[1] - freqs[0]
-    sm = running_median(med, max(3, int(300 / df)))  # ignore individual signals
+    w = max(3, int(300 / df))   # smooth over 300 Hz so single signals don't count
     sel = (freqs >= f_lo) & (freqs <= f_hi)
     if not sel.any():
         return sel
-    top = np.max(sm[sel])
-    return sel & (sm >= top - 15)
+    # Two views, each fooled by something different:
+    #  * the typical level (median) - fooled by a data signal that's on most of the time
+    #  * the quiet moments (10th percentile) - fooled by heavy AGC compression
+    # Inside the filter if either says so, but never down at the near-silent
+    # level outside the filter.
+    med = running_median(np.median(spec_db, axis=0), w)
+    quiet = running_median(np.percentile(spec_db, 10, axis=0), w)
+    top_med, top_q = np.max(med[sel]), np.max(quiet[sel])
+    by_med = med >= top_med - 15
+    by_quiet = (quiet >= top_q - 15) & (med >= top_med - 30)
+    return sel & (by_med | by_quiet)
 
 
 def _running_nanmedian(v: np.ndarray, width: int) -> np.ndarray:

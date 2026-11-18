@@ -197,3 +197,42 @@ def cw_hard(seconds=15, freq=700, wpm=22, amp=0.6, text="CQ TEST DE KC8JXH "):
     gate = np.array(gate[:n] + [0] * max(0, n - len(gate)), float)
     t = np.arange(n) / FS
     return amp * gate * np.sin(2 * np.pi * freq * t)
+
+
+def burst_gate(seconds: float, bursts) -> np.ndarray:
+    """0/1 gate with short ramps for a list of (start_s, length_s) bursts."""
+    n = int(seconds * FS)
+    g = np.zeros(n)
+    for st, ln in bursts:
+        a, b = int(st * FS), min(n, int((st + ln) * FS))
+        g[a:b] = 1
+    return _smooth_gate(g, 3)
+
+
+def ardop_4fsk(seconds=15, centre=1500, amp=0.2, seed=6,
+               bursts=((0.8, 0.6), (3.6, 1.1), (6.9, 0.7), (9.8, 1.2), (12.9, 0.6))):
+    """Imitation of ARDOP 200 Hz frames: 4 tones 50 Hz apart, 50 baud, in short bursts."""
+    rng = np.random.default_rng(seed)
+    syms = rng.integers(0, 4, int(seconds * 50) + 1)
+    tones = centre - 75 + 50 * np.arange(4)
+    x = fsk(syms, 50, tones, amp)[: int(seconds * FS)]
+    x = np.pad(x, (0, max(0, int(seconds * FS) - len(x))))
+    return x * burst_gate(seconds, bursts)
+
+
+def ofdm_data(seconds=15, centre=1500, width=480, spacing=46.875, baud=37.5, amp=0.2, seed=7,
+              bursts=((0.5, 4.8), (6.3, 0.9), (8.1, 5.2))):
+    """Imitation of a multi-carrier ARQ data mode (VARA/PACTOR-like): many PSK carriers, bursts."""
+    rng = np.random.default_rng(seed)
+    n = int(seconds * FS)
+    t = np.arange(n) / FS
+    ncar = max(2, int(width / spacing))
+    freqs = centre - spacing * (ncar - 1) / 2 + spacing * np.arange(ncar)
+    sps = int(FS / baud)
+    x = np.zeros(n)
+    for f in freqs:
+        ph = rng.integers(0, 4, n // sps + 2) * (np.pi / 2)
+        phase = np.repeat(ph, sps)[:n]
+        x += np.cos(2 * np.pi * f * t + phase)
+    x = amp * x / np.sqrt(ncar)
+    return x * burst_gate(seconds, bursts)
