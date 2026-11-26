@@ -225,12 +225,36 @@ class App:
         info.pack(side="right", anchor="n", padx=8, pady=8)
         self.utc_lbl = tk.Label(info, text="", font=("Consolas", 12), bg="#0b0f14", fg="#8a96a3", anchor="e")
         self.utc_lbl.pack(fill="x")
-        self.lcd_freq = tk.Label(info, text="--.---.--", font=("Consolas", 20, "bold"),
-                                 bg="#0b0f14", fg="#4a5560", anchor="e", width=10)
-        self.lcd_freq.pack(fill="x")
-        self.lcd_mode = tk.Label(info, text="", font=("Consolas", 13, "bold"),
+        frow = tk.Frame(info, bg="#0b0f14")
+        frow.pack(fill="x")
+        # Click the frequency to type a new one; arrows / mouse wheel step it.
+        self.lcd_freq = tk.Label(frow, text="--.---.--", font=("Consolas", 20, "bold"),
+                                 bg="#0b0f14", fg="#4a5560", anchor="e", width=10, cursor="xterm")
+        self.lcd_freq.pack(side="left", fill="x", expand=True)
+        self.lcd_freq.bind("<Button-1>", lambda e: self._freq_edit())
+        self.lcd_freq.bind("<MouseWheel>", self._freq_wheel)                   # Windows / Mac
+        self.lcd_freq.bind("<Button-4>", lambda e: self._freq_step(+1))        # Linux wheel
+        self.lcd_freq.bind("<Button-5>", lambda e: self._freq_step(-1))
+        arrows = tk.Frame(frow, bg="#0b0f14")
+        arrows.pack(side="left", padx=(6, 0))
+        for sym, sign in (("▲", +1), ("▼", -1)):
+            tk.Button(arrows, text=sym, font=("Segoe UI", 7), width=2, pady=0, bd=1, bg="#1f2933", fg="#d0d7de",
+                      activebackground="#39c5ff", repeatdelay=400, repeatinterval=120,
+                      command=lambda s=sign: self._freq_step(s)).pack()
+        self.freq_entry = None
+        self.tune_pending = None    # (hz, time) of our last tune, shown until the radio confirms
+        mrow = tk.Frame(info, bg="#0b0f14")
+        mrow.pack(fill="x")
+        self.steps = [10, 100, 1000, 5000]
+        self.step = self.settings.get("tune_step", 100) if self.settings.get("tune_step") in self.steps else 100
+        self.step_lbl = tk.Label(mrow, text="", font=("Consolas", 9), bg="#0b0f14", fg="#8a96a3",
+                                 cursor="hand2")
+        self.step_lbl.pack(side="left")
+        self.step_lbl.bind("<Button-1>", lambda e: self._next_step())
+        self._show_step()
+        self.lcd_mode = tk.Label(mrow, text="", font=("Consolas", 13, "bold"),
                                  bg="#0b0f14", fg="#39c5ff", anchor="e")
-        self.lcd_mode.pack(fill="x")
+        self.lcd_mode.pack(side="right")
 
         # -- mode buttons, just left of the display
         modes = tk.Frame(header)
@@ -249,7 +273,7 @@ class App:
         top = ttk.Frame(controls, padding=(8, 8, 8, 2))
         top.pack(fill="x")
         ttk.Label(top, text="Sound input:", width=12).pack(side="left")
-        self.device_box = ttk.Combobox(top, width=40, state="readonly")
+        self.device_box = ttk.Combobox(top, width=33, state="readonly")
         self.device_box.pack(side="left", padx=6)
         self.start_btn = ttk.Button(top, text="Start listening", command=self.toggle)
         self.start_btn.pack(side="left")
@@ -270,7 +294,7 @@ class App:
         self.radio_box.pack(side="left", padx=6)
         self.radio_box.bind("<<ComboboxSelected>>", self._radio_changed)
         ttk.Label(rrow, text="Port:").pack(side="left")
-        self.port_box = ttk.Combobox(rrow, width=20, state="readonly")
+        self.port_box = ttk.Combobox(rrow, width=16, state="readonly")
         self.port_box.pack(side="left", padx=4)
         ttk.Button(rrow, text="↻", width=3, command=self._fill_ports).pack(side="left")
         ttk.Label(rrow, text="Speed:").pack(side="left", padx=(8, 0))
@@ -421,6 +445,79 @@ class App:
             return None
         return st
 
+    # -- typing / stepping the frequency -------------------------------------------
+
+    def _radio_ready(self):
+        if self.radio is None:
+            self.status.config(text="Connect the radio first to change the frequency.")
+            return None
+        st = self.radio.get()
+        if not st.ok:
+            self.status.config(text="The radio isn't answering, so it can't change frequency.")
+            return None
+        return st
+
+    def _freq_edit(self):
+        if self.freq_entry is not None or self._radio_ready() is None:
+            return
+        e = tk.Entry(self.lcd_freq.master, font=("Consolas", 20, "bold"), bg="#1f2933", fg="#ffffff",
+                     insertbackground="#39c5ff", justify="right", relief="flat", width=10)
+        e.insert(0, self.lcd_freq.cget("text"))
+        e.select_range(0, "end")
+        e.place(in_=self.lcd_freq, relx=0, rely=0, relwidth=1, relheight=1)
+        e.focus_set()
+        e.bind("<Return>", lambda ev: self._freq_typed(e.get()))
+        e.bind("<KP_Enter>", lambda ev: self._freq_typed(e.get()))
+        e.bind("<Escape>", lambda ev: self._freq_edit_close())
+        e.bind("<FocusOut>", lambda ev: self._freq_edit_close())
+        self.freq_entry = e
+        self.status.config(text="Type a frequency (e.g. 14.074 or 14074) and press Enter. Esc cancels.")
+
+    def _freq_edit_close(self):
+        if self.freq_entry is not None:
+            self.freq_entry.destroy()
+            self.freq_entry = None
+
+    def _freq_typed(self, text: str):
+        hz = R.parse_freq(text)
+        if hz is None:
+            self.status.config(text=f"Couldn't read \"{text}\" as a frequency. Try 14.074 (MHz) or 14074 (kHz).")
+            self.freq_entry.select_range(0, "end")
+            return
+        self._freq_edit_close()
+        self._tune_to(hz)
+
+    def _tune_to(self, hz: float):
+        if self._radio_ready() is None:
+            return
+        hz = round(hz / 10) * 10
+        self.radio.tune(hz)
+        self.tune_pending = (hz, time.monotonic())
+        self.lcd_freq.config(text=R.format_freq(hz))
+        self.status.config(text=f"Tuning the radio to {R.format_freq(hz)}")
+
+    def _freq_step(self, sign: int):
+        st = self._radio_ready()
+        if st is None or not st.freq_hz:
+            return
+        base = st.freq_hz
+        if self.tune_pending and time.monotonic() - self.tune_pending[1] < 1.5:
+            base = self.tune_pending[0]       # keep stepping from where we asked to go
+        self._tune_to(R.step_freq(base, self.step, sign))
+
+    def _freq_wheel(self, e):
+        self._freq_step(+1 if e.delta > 0 else -1)
+
+    def _show_step(self):
+        s = self.step
+        self.step_lbl.config(text=f"step {s // 1000} kHz" if s >= 1000 else f"step {s} Hz")
+
+    def _next_step(self):
+        self.step = self.steps[(self.steps.index(self.step) + 1) % len(self.steps)]
+        self._show_step()
+        self.settings["tune_step"] = self.step
+        save_settings(self.settings)
+
     def _tune(self, dial: float | None, st):
         if dial is None:
             self.status.config(text=f"Click-to-tune doesn't work in {st.mode} mode. Switch to USB, LSB, CW or RTTY.")
@@ -557,7 +654,10 @@ class App:
         if self.radio is not None:
             st = self.radio.get()
             if st.ok:
-                self.lcd_freq.config(text=st.freq_text(), fg="#f2f2f2")
+                shown = st.freq_text()
+                if self.tune_pending and time.monotonic() - self.tune_pending[1] < 1.5:
+                    shown = R.format_freq(self.tune_pending[0])   # don't flick back while the radio catches up
+                self.lcd_freq.config(text=shown, fg="#f2f2f2")
                 self.lcd_mode.config(text=st.mode, fg="#39c5ff")
                 if st.cw_pitch and st.mode.upper().startswith("CW"):
                     self.lcd_mode.config(text=f"{st.mode}  pitch {st.cw_pitch:.0f}")

@@ -157,6 +157,19 @@ way to improve it. To share one, open this project on GitHub, click
 
 You can also analyse a saved file: `python -m signal_identifier recordings\yourfile.wav`
 
+## Changing frequency from the display
+
+With the radio connected:
+
+- **Click the frequency** in the top right, type a new one and press **Enter**
+  (**Esc** cancels). Any of these work: `14.074`, `14074`, `14074000` or the
+  radio's own style `14.074.00`.
+- **▲ / ▼** next to the frequency step it up or down. Hold one down to keep going.
+- The mouse wheel over the frequency does the same.
+- Click **step** under the frequency to choose the step size: 10 Hz, 100 Hz,
+  1 kHz or 5 kHz. Steps land on round numbers: from 14.074.03, ▲ with 100 Hz
+  steps goes to 14.074.10.
+
 ## Band and mode buttons
 
 With the radio connected:

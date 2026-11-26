@@ -477,3 +477,30 @@ def test_poller_leaves_scope_alone_while_data_flows():
     finally:
         stop.set()
         p.stop()
+
+
+
+@pytest.mark.parametrize("text,hz", [
+    ("14.074", 14_074_000), ("14074", 14_074_000), ("14074000", 14_074_000),
+    ("14.074.00", 14_074_000), ("14.074.50", 14_074_500), ("7.0745", 7_074_500),
+    ("1840.5", 1_840_500), ("144.174", 144_174_000), ("3573 khz", 3_573_000),
+    ("14,230", 14_230_000), (" 21.074 ", 21_074_000), ("50.313MHz", 50_313_000),
+])
+def test_parse_freq(text, hz):
+    assert R.parse_freq(text) == hz
+
+
+@pytest.mark.parametrize("text", ["", "abc", "14.07x", "0", "999999999999", "14.07.4"])
+def test_parse_freq_rejects(text):
+    assert R.parse_freq(text) is None
+
+
+
+@pytest.mark.parametrize("hz,step,d,want", [
+    (14_074_000, 100, +1, 14_074_100), (14_074_000, 100, -1, 14_073_900),
+    (14_074_030, 100, +1, 14_074_100), (14_074_030, 100, -1, 14_074_000),
+    (14_074_000, 5000, +1, 14_075_000), (14_074_000, 5000, -1, 14_070_000),
+    (14_074_010, 10, +1, 14_074_020),
+])
+def test_step_freq(hz, step, d, want):
+    assert R.step_freq(hz, step, d) == want

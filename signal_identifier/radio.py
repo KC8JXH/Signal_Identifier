@@ -81,6 +81,47 @@ def format_freq(hz: float) -> str:
 format_mhz = format_freq  # older name
 
 
+def step_freq(hz: float, step: float, direction: int) -> float:
+    """One step up (+1) or down (-1), landing on the step grid: from 14.074.03
+    with 100 Hz steps, up goes to 14.074.10 and down to 14.074.00."""
+    import math
+    n = hz / step
+    if direction > 0:
+        return float((math.floor(n + 1e-9) + 1) * step)
+    return float((math.ceil(n - 1e-9) - 1) * step)
+
+
+def parse_freq(text: str) -> float | None:
+    """What someone typed into the frequency display -> Hz, or None.
+
+    Accepts the radio's own layout (14.074.00), MHz (14.074, 7.0745),
+    kHz (14074, 1840.5) and Hz (14074000). Plain numbers are read by size:
+    under 1000 = MHz, under 1,000,000 = kHz, otherwise Hz."""
+    t = text.strip().lower().replace(",", ".").replace(" ", "")
+    for unit, mult in (("mhz", 1e6), ("khz", 1e3), ("hz", 1.0)):
+        if t.endswith(unit):
+            try:
+                v = float(t[:-len(unit)]) * mult
+            except ValueError:
+                return None
+            break
+    else:
+        if t.count(".") == 2:                 # 14.074.00 = MHz . kHz . tens of Hz
+            mhz, khz, tens = t.split(".")
+            if not (mhz.isdigit() and khz.isdigit() and tens.isdigit()) or len(khz) != 3:
+                return None
+            v = int(mhz) * 1e6 + int(khz) * 1e3 + int(tens.ljust(2, "0")[:2]) * 10
+        else:
+            try:
+                n = float(t)
+            except ValueError:
+                return None
+            v = n * 1e6 if n < 1000 else n * 1e3 if n < 1_000_000 else n
+    if not 30_000 <= v <= 500_000_000:          # 30 kHz .. 500 MHz
+        return None
+    return float(round(v))
+
+
 def s_units_text(db: float | None) -> str:
     if db is None:
         return ""
