@@ -429,3 +429,51 @@ def test_rigctld_tx_meters():
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def _scope_on_cmds(fs):
+    return sum(1 for w in fs.written if w == b"\xfe\xfe\x94\xe0\x27\x10\x01\xfd")
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_poller_turns_scope_back_on(keep):
+    """When scope data stops arriving, the poller re-sends 'scope on' (only if allowed)."""
+    import time
+    fs = FakeSerial(ic7300())
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    p.keep_scope_on = keep
+    try:
+        for _ in range(40):
+            if p.get().ok:
+                break
+            time.sleep(0.05)
+        first = _scope_on_cmds(fs)          # sent once at connect
+        assert first == 1
+        time.sleep(5.6)                      # no scope data at all -> one retry after 5 s
+        assert (_scope_on_cmds(fs) > first) is keep
+        assert (p.scope_kicks > 0) is keep
+    finally:
+        p.stop()
+
+
+def test_poller_leaves_scope_alone_while_data_flows():
+    import threading as th
+    import time
+    fs = FakeSerial(ic7300())
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    stop = th.Event()
+
+    def feed():
+        vals = [50] * 475
+        while not stop.is_set():
+            fs.push(scope_frames(14_000_000, 14_350_000, vals))
+            time.sleep(0.3)
+    th.Thread(target=feed, daemon=True).start()
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    try:
+        time.sleep(5.8)
+        assert p.scope_kicks == 0 and _scope_on_cmds(fs) == 1
+    finally:
+        stop.set()
+        p.stop()

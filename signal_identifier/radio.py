@@ -765,6 +765,10 @@ class RadioPoller:
         self._scope_cmd = None
         self.scope_message = ""
         self.has_scope = hasattr(protocol, "latest_scope")
+        # If the radio stops sending scope data (scope switched off on the radio),
+        # ask it to turn the scope back on every few seconds.
+        self.keep_scope_on = True
+        self.scope_kicks = 0
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -780,10 +784,19 @@ class RadioPoller:
         last_pitch = -1e9
         meter_ok = True
         tx_ok = hasattr(self.protocol, "read_tx")
+        last_kick = time.monotonic()
         pitch = None
         while self.running:
             now = time.monotonic()
             self._do_requests()
+            if (self.has_scope and self.keep_scope_on and self.state.ok and now - last_kick >= 5.0
+                    and self.protocol.latest_scope(max_age=3.0) is None):
+                last_kick = now
+                try:
+                    self.protocol.enable_scope(True)   # 27 10 01 scope on, 27 11 01 data out
+                    self.scope_kicks += 1
+                except Exception:
+                    pass
             if now - last_full >= self.interval:
                 last_full = now
                 try:

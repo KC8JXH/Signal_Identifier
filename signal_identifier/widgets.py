@@ -287,6 +287,8 @@ class BandScope(tk.Canvas):
         self.last_sweep = None
         self.state = None         # RadioState
         self.message = "Connect an Icom radio (like the IC-7300) to see the whole band here."
+        self.no_signal = False    # radio connected but no scope data arriving
+        self.hint = ""            # small text under NO SIGNAL
         self.hover = None
         self.bind("<Configure>", lambda e: self._reset())
         self.bind("<Button-1>", self._click)
@@ -326,12 +328,16 @@ class BandScope(tk.Canvas):
         """Called regularly by the window with the newest sweep and radio state."""
         self.state = state
         if sweep is None:
-            if self.view is None:
+            if self.last_sweep is not None and not self.no_signal:
+                self.show_no_signal()          # data was flowing and has stopped
+            elif self.view is None:
                 self._overlay()
             return
         if sweep is self.last_sweep:
             return
         self.last_sweep = sweep
+        self.no_signal = False
+        self.hint = ""
         from .bandplan import band_for
         band = band_for((sweep.lo_hz + sweep.hi_hz) / 2) or band_for(state.freq_hz if state else None)
         if band and sweep.lo_hz <= band[0] and sweep.hi_hz >= band[1]:
@@ -355,8 +361,29 @@ class BandScope(tk.Canvas):
         self._overlay()
 
     def set_message(self, text: str):
+        if text == self.message and not self.no_signal:
+            return
         self.message = text
+        self.no_signal = False
         self._overlay()
+
+    def show_no_signal(self, hint: str = ""):
+        """Big white NO SIGNAL in the middle of the scope, with an optional hint under it."""
+        if self.no_signal and hint == self.hint:
+            return
+        self.no_signal = True
+        self.hint = hint
+        self._overlay()
+
+    def _draw_no_signal(self, w, h):
+        cx, cy = w / 2, self.top + (h - self.top) / 2 - (8 if self.hint else 0)
+        font = ("Segoe UI", 26, "bold")
+        for dx, dy in ((2, 2), (-1, -1), (2, -1), (-1, 2)):   # dark outline so it reads on any colour
+            self.create_text(cx + dx, cy + dy, text="NO SIGNAL", fill="#000000", font=font, tags="ov")
+        self.create_text(cx, cy, text="NO SIGNAL", fill="#ffffff", font=font, tags="ov")
+        if self.hint:
+            self.create_text(cx, cy + 30, text=self.hint, fill="#c9d1d9", font=("Segoe UI", 9),
+                             width=w - 40, justify="center", tags="ov")
 
     def _render(self):
         h, w, _ = self.buf.shape
@@ -376,8 +403,11 @@ class BandScope(tk.Canvas):
         w, h = self._size()
         self.create_rectangle(0, 0, w, self.top, fill="#0b0f14", outline="", tags="ov")
         if not self.view:
-            self.create_text(w / 2, h / 2, text=self.message, fill="#9aa5b1",
-                             font=("Segoe UI", 11), tags="ov")
+            if self.no_signal:
+                self._draw_no_signal(w, h)
+            else:
+                self.create_text(w / 2, h / 2, text=self.message, fill="#9aa5b1",
+                                 font=("Segoe UI", 11), tags="ov")
             return
         lo, hi = self.view
         span = hi - lo
@@ -425,6 +455,8 @@ class BandScope(tk.Canvas):
                              fill="#ffff66", anchor=anchor, font=("Segoe UI", 9, "bold"), tags="ov")
         if self.message:
             self.create_text(w / 2, h - 14, text=self.message, fill="#ffa94d", font=("Segoe UI", 9), tags="ov")
+        if self.no_signal:
+            self._draw_no_signal(w, h)
 
     def _motion(self, e):
         self.hover = None if (e is None or not self.view) else e.x

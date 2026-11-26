@@ -53,9 +53,11 @@ With that you get:
 - the waterfall scale labelled in radio frequencies
 - on Icom radios, a **whole-band view** from the radio's own band scope (see below)
 
-It never transmits, and never keys the radio. The only things it ever changes on the radio are the
-frequency and mode, and only when you click a signal (with "Click a signal to
-tune the radio" ticked) or press a band or mode button.
+It never transmits, and never keys the radio. The only things it ever changes
+on the radio are the frequency and mode, and only when you click a signal (with
+"Click to tune radio" ticked) or press a band or mode button. On Icom radios it
+also switches the band scope on, so it can show the whole band (see
+"Keep scope on" below).
 
 **IC-7300, step by step**
 
@@ -90,7 +92,7 @@ identifies.
   so this is the reliable way to get a signal into view.)
 - **Click** in the detailed waterfall and the radio goes to exactly the
   frequency shown under the pointer.
-- Turn off "Click a signal to tune the radio" if you don't want clicks to tune.
+- Turn off "Click to tune radio" if you don't want clicks to tune.
 - **Show whole band** switches the radio's scope to centre mode, ±500 kHz,
   which covers any band up to 500 kHz wide. Or set the scope to Fixed mode
   with the band edges on the radio itself; the program shows whatever the
@@ -98,6 +100,15 @@ identifies.
 - The scope only has 475 points across the screen (about 700 Hz each on
   20 m), so it shows *where* signals are. Identifying the mode still needs
   them to be in the detailed (audio) view.
+- **NO SIGNAL** appears in the middle of the band view when the radio isn't
+  sending scope data, for example when its scope is switched off or a menu is
+  open on the radio's screen.
+- **Keep scope on** (ticked by default): if the scope data stops, the program
+  asks the radio to switch its scope back on every 5 seconds, so the band view
+  keeps working even if the scope was turned off on the radio. Untick it if
+  you want to switch the radio's scope off yourself and leave it off. While a
+  menu is open on the radio, the radio sends no scope data at all, so the band
+  view shows NO SIGNAL until you close the menu.
 
 **Using WSJT-X at the same time?** Only one program can use the radio's COM
 port at once. To share it, run **flrig** (free), point both WSJT-X and this

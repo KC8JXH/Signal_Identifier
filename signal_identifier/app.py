@@ -317,9 +317,12 @@ class App:
             b.pack(side="left", padx=1)
             self.band_btns[name] = b
         self.click_tune = tk.BooleanVar(value=self.settings.get("click_to_tune", True))
-        ttk.Checkbutton(bandbar, text="Click a signal to tune the radio", variable=self.click_tune,
+        ttk.Checkbutton(bandbar, text="Click to tune radio", variable=self.click_tune,
                         command=self._save_click_tune).pack(side="left", padx=12)
         ttk.Button(bandbar, text="Show whole band", command=self._whole_band).pack(side="left")
+        self.keep_scope = tk.BooleanVar(value=self.settings.get("keep_scope_on", True))
+        ttk.Checkbutton(bandbar, text="Keep scope on", variable=self.keep_scope,
+                        command=self._save_keep_scope).pack(side="left", padx=8)
         bf = tk.Frame(root, padx=8)
         bf.pack(fill="x")
         self.band = BandScope(bf, on_click=self._band_click)
@@ -366,10 +369,15 @@ class App:
                 st = self.radio.get()
                 self.band.update_scope(self.radio.scope(), st if st.ok else None)
                 if self.band.last_sweep is None and time.monotonic() - self.radio_started > 6:
-                    self.band.set_message(self.radio.scope_message or
-                                          "No band-scope data from the radio yet. On the IC-7300: MENU > SET > "
-                                          "Connectors > CI-V: CI-V USB Port = Unlink from [REMOTE], "
-                                          "CI-V USB Baud Rate = 115200.")
+                    self.band.show_no_signal(self.radio.scope_message or
+                                             "No band-scope data from the radio yet. On the IC-7300: MENU > SET > "
+                                             "Connectors > CI-V: CI-V USB Port = Unlink from [REMOTE], "
+                                             "CI-V USB Baud Rate = 115200.")
+                elif self.band.no_signal and self.band.last_sweep is not None:
+                    self.band.show_no_signal(
+                        "Trying to switch the radio's scope back on…" if self.keep_scope.get() else
+                        "The radio stopped sending scope data. Turn its scope on, or tick "
+                        "\"Keep scope on\".")
             elif self.radio is not None:
                 self.band.set_message("The whole-band view needs an Icom radio (IC-7300, IC-705, IC-7610, IC-9700).")
             else:
@@ -378,6 +386,12 @@ class App:
             self.band.set_message(f"Band view problem: {e}")
         self.root.after(100, self.band_tick)
 
+    def _save_keep_scope(self):
+        self.settings["keep_scope_on"] = bool(self.keep_scope.get())
+        save_settings(self.settings)
+        if self.radio is not None:
+            self.radio.keep_scope_on = self.settings["keep_scope_on"]
+
     def _save_click_tune(self):
         self.settings["click_to_tune"] = bool(self.click_tune.get())
         save_settings(self.settings)
@@ -385,7 +399,7 @@ class App:
     def _radio_for_click(self):
         """The radio state if a click may tune it; otherwise say why not."""
         if not self.click_tune.get():
-            self.status.config(text="Click-to-tune is switched off (tick 'Click a signal to tune the radio').")
+            self.status.config(text="Click-to-tune is switched off (tick 'Click to tune radio').")
             return None
         if self.radio is None:
             self.status.config(text="Connect the radio first to tune by clicking.")
@@ -521,6 +535,7 @@ class App:
             messagebox.showerror("Signal Identifier", f"Couldn't open the radio on {port}:\n\n{e}{hint}")
             return
         self.radio = R.RadioPoller(protocol, sp)
+        self.radio.keep_scope_on = bool(self.keep_scope.get())
         self.radio_started = time.monotonic()
         self.radio_btn.config(text="Disconnect radio")
         self.settings.update(radio=name, radio_port=port, radio_baud=self.baud_box.get(),
