@@ -10,32 +10,31 @@ just noise. It shows a live waterfall with each signal labelled.
 
 ## Getting it running (Windows)
 
-1. **Install Python (one time only).** Go to <https://www.python.org/downloads/>,
-   click the yellow **Download** button and run the installer.
-   **Tick "Add python.exe to PATH"** at the bottom of the first screen, then
-   click **Install Now**.
-2. **Download this program.** On this GitHub page, click the green **Code**
+1. **Download this program.** On this GitHub page, click the green **Code**
    button, then **Download ZIP**.
-3. **Unzip it.** Open your Downloads folder, right-click the ZIP file, choose
+2. **Unzip it.** Open your Downloads folder, right-click the ZIP file, choose
    **Extract All…**, then click **Extract**.
-4. **Install and start it.** In the extracted folder, double-click
-   **`Start Signal Identifier.bat`**.
+3. **Install and start it.** In the folder that opens, double-click
+   **`Start Signal Identifier`**.
    - If Windows shows a blue "Windows protected your PC" box, click
      **More info**, then **Run anyway**.
-   - It installs the program in **`C:\SignalIdentifier`** and starts it from
-     there. The first time takes a minute or two while a black window shows
-     the setup.
-   - It puts a **Signal Identifier** icon on your Desktop. From then on, start
+   - A black window shows the setup. The first time takes a few minutes:
+     if the computer doesn't have Python yet, it's installed automatically.
+   - The program is installed in **`C:\SignalIdentifier`** and starts.
+   - A **Signal Identifier** icon appears on the Desktop. From then on, start
      the program with that icon: it opens with no black window at all.
-   - The downloaded ZIP and the extracted folder aren't needed any more: you
-     can delete them.
+   - The download tidies itself away: a few seconds after the program starts,
+     the unzipped folder and the downloaded ZIP are deleted.
    - If the program ever can't start, a message box says why, and the details
      are saved in `C:\SignalIdentifier\signal_identifier_error.log`.
 
-**Updating:** download the ZIP again, extract it anywhere, and double-click
-**`Start Signal Identifier.bat`** in it. It copies the new version into
-`C:\SignalIdentifier` (your settings and recordings are kept) and starts it.
-Then you can delete the download again.
+If Python can't be installed automatically (very old Windows 10 without the
+"winget" installer), the black window explains how to install it by hand.
+
+**Updating:** download the ZIP again, unzip it, and double-click
+**`Start Signal Identifier`** in it. The new version replaces the old one in
+`C:\SignalIdentifier` (settings and recordings are kept), starts, and the
+download is deleted again.
 
 ## Using it
 
