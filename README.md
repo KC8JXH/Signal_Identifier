@@ -18,16 +18,24 @@ just noise. It shows a live waterfall with each signal labelled.
    button, then **Download ZIP**.
 3. **Unzip it.** Open your Downloads folder, right-click the ZIP file, choose
    **Extract All…**, then click **Extract**.
-4. **Start it.** In the extracted folder, double-click
+4. **Install and start it.** In the extracted folder, double-click
    **`Start Signal Identifier.bat`**.
    - If Windows shows a blue "Windows protected your PC" box, click
      **More info**, then **Run anyway**.
-   - The first start takes a minute or two while a black window shows the
-     setup. After that it opens quickly.
-   - It also puts a **Signal Identifier** icon on your Desktop. From then on,
-     start the program with that icon: it opens with no black window at all.
+   - It installs the program in **`C:\SignalIdentifier`** and starts it from
+     there. The first time takes a minute or two while a black window shows
+     the setup.
+   - It puts a **Signal Identifier** icon on your Desktop. From then on, start
+     the program with that icon: it opens with no black window at all.
+   - The downloaded ZIP and the extracted folder aren't needed any more: you
+     can delete them.
    - If the program ever can't start, a message box says why, and the details
-     are saved in `signal_identifier_error.log` in the program's folder.
+     are saved in `C:\SignalIdentifier\signal_identifier_error.log`.
+
+**Updating:** download the ZIP again, extract it anywhere, and double-click
+**`Start Signal Identifier.bat`** in it. It copies the new version into
+`C:\SignalIdentifier` (your settings and recordings are kept) and starts it.
+Then you can delete the download again.
 
 ## Using it
 
@@ -209,12 +217,12 @@ sees ARDOP's 4 tones 50 Hz apart. It can't yet tell VARA from PACTOR, and a
 
 ## Good to know
 
-- **Keep the program's folder.** The program runs from it (the Desktop icon
-  points into it), so don't delete it. To move it somewhere else, move the
-  whole folder, then double-click **Start Signal Identifier.bat** once in its
-  new place: it repairs the setup if needed and points the Desktop icon at the
-  new place. Your settings aren't stored in the folder, so they're kept.
-- To remove the program completely, delete its folder and the Desktop icon.
+- The program lives in **`C:\SignalIdentifier`**: don't delete that folder
+  (the Desktop icon points into it). Recordings are saved in its
+  `recordings` folder. To install somewhere else, change the `INSTALL_DIR`
+  line near the top of `Start Signal Identifier.bat`.
+- To remove the program completely, delete `C:\SignalIdentifier` and the
+  Desktop icon.
 - This **identifies** the mode; it doesn't decode the text. To read the
   messages, use WSJT-X (FT8/FT4) or fldigi (RTTY, PSK31, CW).
 - It's a best guess, shown as "very likely", "likely" or "maybe". Very weak

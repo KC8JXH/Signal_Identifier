@@ -1,9 +1,21 @@
 @echo off
-rem Double-click this file to start Signal Identifier.
-rem The first time, it also puts a "Signal Identifier" icon on your Desktop:
-rem that icon starts the program without any black window.
+rem Double-click this file to install (or update) and start Signal Identifier.
+rem It copies the program to INSTALL_DIR below and runs it from there, so the
+rem downloaded folder can be deleted afterwards. It also puts a
+rem "Signal Identifier" icon on your Desktop that starts the program without
+rem any black window.
 title Signal Identifier
+set "INSTALL_DIR=C:\SignalIdentifier"
 cd /d "%~dp0"
+
+rem Running from a downloaded copy: install / update it in INSTALL_DIR first.
+rem Keeps what's already there (Python setup, recordings); copies new files over.
+if /i not "%CD%"=="%INSTALL_DIR%" (
+    echo Installing Signal Identifier in %INSTALL_DIR% ...
+    robocopy "%CD%" "%INSTALL_DIR%" /E /XD .venv .git __pycache__ .pytest_cache /XF signal_identifier_error.log /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul
+    if errorlevel 8 goto copyfailed
+    cd /d "%INSTALL_DIR%"
+)
 
 set "PY="
 where py >nul 2>nul && set "PY=py -3"
@@ -48,6 +60,14 @@ exit /b 0
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$here=(Get-Location).Path; $lnk=Join-Path ([Environment]::GetFolderPath('Desktop')) 'Signal Identifier.lnk'; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($lnk); $s.TargetPath=Join-Path $here '.venv\Scripts\pythonw.exe'; $s.Arguments='-m signal_identifier'; $s.WorkingDirectory=$here; $s.IconLocation=(Join-Path $here 'signal_identifier\icon.ico')+',0'; $s.Description='Signal Identifier'; $s.Save()" >nul 2>nul
 if not errorlevel 1 >".venv\desktop-icon-made" echo %CD%
 exit /b 0
+
+:copyfailed
+echo.
+echo  Couldn't copy the program to %INSTALL_DIR%.
+echo  If Signal Identifier is running, close it and double-click this file again.
+echo.
+pause
+exit /b 1
 
 :nopython
 echo.
