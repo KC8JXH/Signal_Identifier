@@ -60,9 +60,40 @@ def main(argv=None) -> int:
     if a.wav:
         identify_file(a.wav)
         return 0
-    from .app import main as gui
-    gui(demo=a.demo)
+    try:
+        from .app import main as gui
+        gui(demo=a.demo)
+    except Exception:
+        _report_startup_error()
+        return 1
     return 0
+
+
+def _report_startup_error() -> None:
+    """There's no black console window any more, so a crash would otherwise be
+    invisible: save the details to a file and show them in a message box."""
+    import traceback
+    from pathlib import Path
+    details = traceback.format_exc()
+    log = Path(__file__).resolve().parent.parent / "signal_identifier_error.log"
+    try:
+        log.write_text(details, encoding="utf-8")
+    except OSError:
+        log = None
+    if sys.stderr is not None:
+        print(details, file=sys.stderr)
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        msg = "Signal Identifier couldn't start.\n\n" + details.strip().splitlines()[-1]
+        if log:
+            msg += f"\n\nThe full details are saved in:\n{log}\nPlease send that file to whoever helped you set this up."
+        messagebox.showerror("Signal Identifier", msg)
+        root.destroy()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

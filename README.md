@@ -22,9 +22,12 @@ just noise. It shows a live waterfall with each signal labelled.
    **`Start Signal Identifier.bat`**.
    - If Windows shows a blue "Windows protected your PC" box, click
      **More info**, then **Run anyway**.
-   - The first start takes a minute or two while it gets set up. After that
-     it opens quickly.
-   - Keep the black window open while you use the program.
+   - The first start takes a minute or two while a black window shows the
+     setup. After that it opens quickly.
+   - It also puts a **Signal Identifier** icon on your Desktop. From then on,
+     start the program with that icon: it opens with no black window at all.
+   - If the program ever can't start, a message box says why, and the details
+     are saved in `signal_identifier_error.log` in the program's folder.
 
 ## Using it
 

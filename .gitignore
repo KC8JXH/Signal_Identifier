@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 *.wav
 recordings/
+signal_identifier_error.log

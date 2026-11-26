@@ -929,5 +929,9 @@ def main(demo: bool = False):
         ttk.Style().theme_use("vista")
     except tk.TclError:
         pass
+    try:
+        root.iconbitmap(default=str(Path(__file__).resolve().parent / "icon.ico"))   # Windows title bar / taskbar
+    except tk.TclError:
+        pass
     App(root, demo=demo)
     root.mainloop()
