@@ -1,11 +1,12 @@
 # Signal Identifier
 
 Listens to your radio through your computer's sound card and tells you what kind
-of signal you're hearing: **CW, SSB voice, FT8, FT4, RTTY, PSK31**,
+of signal you're hearing: **CW, SSB voice, FT8, FT4, RTTY, PSK31, SSTV
+pictures** (with the SSTV mode, e.g. Martin M1), weather fax,
 Winlink-style **ARQ data bursts** (ARDOP, VARA, PACTOR), a steady carrier, or
 just noise. It shows a live waterfall with each signal labelled.
 
-![modes](https://img.shields.io/badge/modes-CW%20%7C%20SSB%20%7C%20FT8%20%7C%20FT4%20%7C%20RTTY%20%7C%20PSK31-blue)
+![modes](https://img.shields.io/badge/modes-CW%20%7C%20SSB%20%7C%20FT8%20%7C%20FT4%20%7C%20RTTY%20%7C%20PSK31%20%7C%20SSTV-blue)
 
 ## Getting it running (Windows)
 
@@ -164,6 +165,20 @@ With the radio connected:
   band you're already on jumps back to that default spot.
 - **Mode buttons** (LSB, USB, LSB-D, USB-D, CW, RTTY, AM, FM), next to the
   frequency display, change mode. The current band and mode are highlighted.
+
+## SSTV pictures
+
+SSTV (slow-scan TV, e.g. around 14.230 MHz) is labelled with its mode, for
+example **SSTV Martin M1**. Recognised: Martin M1/M2, Scottie S1/S2/DX,
+Robot 36/72, PD50/90/120/160/180/240 and Wraase SC2-180. Weather fax is
+recognised by its line rate too.
+
+It's found from the steady rhythm of the picture's scan lines (Martin M1
+sends one every 446 ms), so it works even if you're tuned off frequency.
+If you are, the label tells you which way to go, for example
+**SSTV Martin M1 - tune down 1.0 kHz**. Tune that much and the picture lands
+on the normal tones (1500-2300 Hz) that MMSSTV or QSSTV expect. The program
+needs about 6 seconds of picture before it's sure.
 
 ## About "ARQ data" labels
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from . import sstv
 from .dsp import decimate, noise_floor_db, passband_mask, stft_db, undo_agc  # noqa: F401
 
 F_LO, F_HI = 150.0, 3500.0
@@ -100,7 +101,21 @@ class Analyzer:
         self.hop_l = self.nfft_l // 8
         self.fl = np.fft.rfftfreq(self.nfft_l, 1 / fs)
         raw = stft_db(x, self.nfft_l, self.hop_l)
-        self.pb_l = passband_mask(raw, self.fl)
+        # An SSTV picture is loud and never pauses, which would make everything
+        # quieter look like it's outside the radio's filter. Find it first and
+        # judge the passband from the rest.
+        self.picture = sstv.detect(x, fs, (10 ** (raw / 10)).mean(axis=0), self.fl) if len(x) >= fs * 2 else None
+        pb_src = raw
+        pic = None
+        if self.picture is not None:
+            pic = (self.fl >= self.picture["lo_hz"] - 30) & (self.fl <= self.picture["hi_hz"] + 30)
+            others = (self.fl >= 100) & (self.fl <= 3800) & ~pic
+            if others.any():
+                pb_src = raw.copy()
+                pb_src[:, pic] = np.median(raw[:, others], axis=1, keepdims=True)
+        self.pb_l = passband_mask(pb_src, self.fl)
+        if pic is not None:
+            self.pb_l |= pic & (self.fl >= 100) & (self.fl <= 3800)
         self.L = undo_agc(raw, self.pb_l)
         self.dt_l = self.hop_l / fs
         self.floor_l = noise_floor_db(self.L, round(300 / (fs / self.nfft_l)), self.pb_l)
@@ -136,9 +151,15 @@ class Analyzer:
         self._voice_bands = []
         if self.seconds < 2.0:
             return []
+        picture = self._sstv()
         band = (self.fl >= F_LO) & (self.fl <= F_HI)
         occ = self.act_l.mean(axis=0)
         occ[~band] = 0
+        if picture is not None:
+            # Judge everything else without the picture in the way.
+            plo = picture.freq_hz - picture.bandwidth_hz / 2 - 150   # sync pulses splash lower
+            phi = picture.freq_hz + picture.bandwidth_hz / 2 + 300   # sharp picture edges splash higher
+            occ[(self.fl >= plo) & (self.fl <= phi)] = 0
         # Ignore isolated noise speckle: need a few percent of the time active.
         cand = occ >= 0.04
         clusters = [c for c in _clusters(cand, max_gap=3) if self._cluster_ok(*c)]
@@ -200,10 +221,34 @@ class Analyzer:
         dets = self._drop_shadows(dets)
         dets = self._drop_pumping_ghosts(dets)
         dets = self._collapse_unclear(dets)
+        if picture is not None:
+            # An SSTV picture is one signal: drop the bits of it that looked like
+            # other modes (data, FT4, PSK, voice...) and show it as one.
+            lo = picture.freq_hz - picture.bandwidth_hz / 2 - 150
+            hi = picture.freq_hz + picture.bandwidth_hz / 2 + 300
+            dets = [d for d in dets if not lo <= d.freq_hz <= hi] + [picture]
         dets.sort(key=lambda d: d.freq_hz)
         return dets
 
-    KNOWN = ("CW", "FT8", "FT4", "RTTY", "PSK31", "Carrier", "SSB voice")
+    def _sstv(self) -> Detection | None:
+        """SSTV picture or weather fax, found by its steady scan-line rhythm."""
+        r = self.picture
+        if r is None:
+            return None
+        fax = r["mode"].startswith("WEFAX")
+        detail = r["mode"]
+        off = r["offset_hz"]
+        if not fax and abs(off) >= 150:
+            khz = abs(off) / 1000
+            detail += (f", tones {khz:.1f} kHz too low: tune down {khz:.1f} kHz" if off < 0 else
+                       f", tones {khz:.1f} kHz too high: tune up {khz:.1f} kHz")
+        lo, hi = max(F_LO, r["lo_hz"]), min(F_HI, r["hi_hz"])
+        a, b = int(np.searchsorted(self.fl, lo)), int(np.searchsorted(self.fl, hi))
+        conf = min(0.95, 0.6 + (r["score"] - sstv.MIN_SCORE))
+        return Detection("Weather fax" if fax else "SSTV", (lo + hi) / 2, hi - lo, conf, detail,
+                         self._strength(a, max(a + 1, b)))
+
+    KNOWN = ("CW", "FT8", "FT4", "RTTY", "PSK31", "Carrier", "SSB voice", "SSTV", "Weather fax")
 
     def _data_regions(self, dets: list[Detection], regions) -> list[Detection]:
         """Where nothing familiar was found, check for ARQ-style data bursts

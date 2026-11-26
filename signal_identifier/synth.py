@@ -236,3 +236,26 @@ def ofdm_data(seconds=15, centre=1500, width=480, spacing=46.875, baud=37.5, amp
         x += np.cos(2 * np.pi * f * t + phase)
     x = amp * x / np.sqrt(ncar)
     return x * burst_gate(seconds, bursts)
+
+
+# SSTV line layouts: (line period ms, sync ms). The picture fills the rest.
+SSTV_MODES = {"Martin M1": (446.446, 4.862), "Scottie S1": (428.22, 9.0),
+              "Robot 36": (150.0, 9.0), "PD120": (508.48, 20.0)}
+
+
+def sstv(seconds=15, mode="Martin M1", offset=0.0, amp=0.3, seed=6):
+    """An SSTV picture: one FM tone, 1500 Hz (black) to 2300 Hz (white), with a
+    1200 Hz sync pulse starting each scan line. `offset` shifts every tone, as
+    when the radio is tuned off frequency."""
+    period, sync = SSTV_MODES[mode]
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(seconds * FS)) / FS
+    pos_ms = (t * 1000) % period
+    line = np.floor(t * 1000 / period)
+    xpic = np.clip((pos_ms - sync) / (period - sync), 0, 1)
+    # a smooth picture: neighbouring lines look alike, like a real image
+    phase = rng.uniform(0, 2 * np.pi, 3)
+    v = 0.5 + 0.3 * np.sin(2 * np.pi * 3 * xpic + phase[0] + line / 25) \
+        + 0.2 * np.sin(2 * np.pi * 7 * xpic + phase[1] + line / 60)
+    freq = np.where(pos_ms < sync, 1200.0, 1500.0 + 800.0 * np.clip(v, 0, 1)) + offset
+    return amp * np.sin(2 * np.pi * np.cumsum(freq) / FS)

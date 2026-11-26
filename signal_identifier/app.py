@@ -33,6 +33,8 @@ MODE_INFO = {
     "RTTY": ("Radioteletype. Decode with fldigi or MMTTY.", "#9c36b5"),
     "PSK31": ("Keyboard-to-keyboard chat. Decode with fldigi.", "#c2255c"),
     "Carrier": ("Steady tone", "#868e96"),
+    "SSTV": ("Slow-scan TV picture. Decode with MMSSTV or QSSTV.", "#e64980"),
+    "Weather fax": ("Weather fax picture. Decode with fldigi.", "#a61e4d"),
     "Data bursts": ("ARQ data link (Winlink: ARDOP, VARA, PACTOR)", "#e8590c"),
     "Faint signal": ("Something is there, but it's too weak to identify", "#868e96"),
     "Unknown": ("Can't tell what this is yet", "#868e96"),
@@ -173,6 +175,11 @@ def marker_text(d) -> str:
         text = "ARDOP" if "ARDOP (Winlink)" in d.detail else f"ARQ data {d.bandwidth_hz:.0f} Hz"
     elif d.mode == "Faint signal":
         text = "Faint"
+    elif d.mode in ("SSTV", "Weather fax"):
+        # e.g. "Martin M1, tones 1.0 kHz too low: tune down 1.0 kHz"
+        name, _, rest = d.detail.partition(",")
+        advice = rest.split(":")[-1].strip() if ":" in rest else ""
+        text = ("SSTV " if d.mode == "SSTV" else "") + name + (f" - {advice}" if advice else "")
     else:
         text = d.mode
     return text if d.confidence >= 0.6 else text + "?"

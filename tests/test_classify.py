@@ -174,3 +174,36 @@ def test_alternating_arq_blocks_are_not_voice():
          + s.ofdm_data(centre=1130, width=250, amp=0.4, bursts=acks, seed=4)
          + s.ofdm_data(centre=1435, width=250, amp=0.4, bursts=acks, seed=5))
     assert modes(s.radio(x + noise())) == ["Data bursts"]
+
+
+# ------------------------------------------------------------------ SSTV
+
+@pytest.mark.parametrize("mode", ["Martin M1", "Scottie S1", "Robot 36", "PD120"])
+def test_sstv_modes(mode):
+    dets = analyze(s.sstv(mode=mode) + noise(), s.FS).detections
+    assert [d.mode for d in dets] == ["SSTV"]
+    assert dets[0].detail == mode          # on frequency: no tuning advice
+    assert abs(dets[0].freq_hz - 1750) < 60
+
+
+def test_sstv_mistuned_and_sync_filtered_off():
+    """Like a real recording: radio 1 kHz too high, so the tones land 1 kHz low
+    and the 200 Hz sync pulse is cut off by the receiver's filter."""
+    audio = s.radio(s.sstv(mode="Martin M1", offset=-1000) + noise(), lo=300, hi=2700)
+    dets = analyze(audio, s.FS).detections
+    assert [d.mode for d in dets] == ["SSTV"]
+    assert dets[0].detail.startswith("Martin M1") and "tune down 1.0 kHz" in dets[0].detail
+
+
+def test_sstv_tuned_high():
+    dets = analyze(s.sstv(mode="Scottie S1", offset=600) + noise(), s.FS).detections
+    assert [d.mode for d in dets] == ["SSTV"]
+    assert "tune up 0.6 kHz" in dets[0].detail
+
+
+def test_sstv_weak():
+    assert modes(s.sstv(amp=0.05) + noise(seed=7)) == ["SSTV"]
+
+
+def test_sstv_with_ft8_beside_it():
+    assert modes(s.sstv(mode="Martin M1", offset=-700) + s.ft8(base=2400) + noise()) == ["FT8", "SSTV"]
