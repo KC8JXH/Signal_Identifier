@@ -209,6 +209,12 @@ sees ARDOP's 4 tones 50 Hz apart. It can't yet tell VARA from PACTOR, and a
 
 ## Good to know
 
+- **Keep the program's folder.** The program runs from it (the Desktop icon
+  points into it), so don't delete it. To move it somewhere else, move the
+  whole folder, then double-click **Start Signal Identifier.bat** once in its
+  new place: it repairs the setup if needed and points the Desktop icon at the
+  new place. Your settings aren't stored in the folder, so they're kept.
+- To remove the program completely, delete its folder and the Desktop icon.
 - This **identifies** the mode; it doesn't decode the text. To read the
   messages, use WSJT-X (FT8/FT4) or fldigi (RTTY, PSK31, CW).
 - It's a best guess, shown as "very likely", "likely" or "maybe". Very weak

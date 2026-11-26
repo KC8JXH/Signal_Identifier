@@ -9,6 +9,15 @@ set "PY="
 where py >nul 2>nul && set "PY=py -3"
 if not defined PY where python >nul 2>nul && set "PY=python"
 
+rem If the folder was moved, the old setup may not work here: start it afresh.
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" -c "import sys" >nul 2>nul
+    if errorlevel 1 (
+        echo This folder seems to have been moved. Setting things up again...
+        rmdir /s /q ".venv"
+    )
+)
+
 if not exist ".venv\Scripts\pythonw.exe" (
     if not defined PY goto nopython
     echo First-time setup: getting things ready. This takes a minute or two...
@@ -25,8 +34,11 @@ if errorlevel 1 (
     copy /y requirements.txt ".venv\installed-requirements.txt" >nul
 )
 
-rem Desktop icon that starts the program with no black window (made once).
-if not exist ".venv\desktop-icon-made" call :makeicon
+rem Desktop icon that starts the program with no black window. Made again
+rem if this folder has moved since, so the icon always points here.
+set "MADE_FOR="
+if exist ".venv\desktop-icon-made" set /p MADE_FOR=<".venv\desktop-icon-made"
+if /i not "%MADE_FOR%"=="%CD%" call :makeicon
 
 rem Start the program without a console window, then close this one.
 start "" ".venv\Scripts\pythonw.exe" -m signal_identifier
@@ -34,7 +46,7 @@ exit /b 0
 
 :makeicon
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$here=(Get-Location).Path; $lnk=Join-Path ([Environment]::GetFolderPath('Desktop')) 'Signal Identifier.lnk'; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($lnk); $s.TargetPath=Join-Path $here '.venv\Scripts\pythonw.exe'; $s.Arguments='-m signal_identifier'; $s.WorkingDirectory=$here; $s.IconLocation=(Join-Path $here 'signal_identifier\icon.ico')+',0'; $s.Description='Signal Identifier'; $s.Save()" >nul 2>nul
-if not errorlevel 1 echo made> ".venv\desktop-icon-made"
+if not errorlevel 1 >".venv\desktop-icon-made" echo %CD%
 exit /b 0
 
 :nopython
