@@ -257,6 +257,10 @@ class App:
                                  bg=BTN_BG, fg="#c92a2a", font=("Segoe UI", 9, "bold"))
         self.rec_btn.pack(side="left", padx=6)
         self.recorder = None
+        # Switch the mode labels on the waterfall (and the identifying behind them) on or off.
+        self.identify = tk.BooleanVar(value=self.settings.get("identify", True))
+        ttk.Checkbutton(top, text="Identify signals", variable=self.identify,
+                        command=self._save_identify).pack(side="left", padx=6)
 
         # -- row 2: radio (CAT) connection
         rrow = ttk.Frame(controls, padding=(8, 2))
@@ -755,9 +759,17 @@ class App:
             self.level_text.config(text="")
         self.root.after(100, self.level_tick)
 
+    def _save_identify(self):
+        self.settings["identify"] = bool(self.identify.get())
+        save_settings(self.settings)
+        if not self.identify.get():
+            self.wf.set_markers([])     # take the labels off straight away
+
     def tick(self):
         try:
-            if self.source is not None:
+            if self.source is not None and not self.identify.get():
+                self.wf.set_markers([])
+            elif self.source is not None:
                 audio = self.source.ring.tail(int(WINDOW_SECONDS * self.source.rate))
                 secs = len(audio) / self.source.rate
                 if secs >= 3:

@@ -38,6 +38,9 @@ just noise. It shows a live waterfall with each signal labelled.
    or "Very quiet", adjust the audio level on the radio or in Windows sound
    settings.
 
+Untick **Identify signals** (top row) to hide the mode labels and just watch the
+waterfall; tick it again to bring them back. The choice is remembered.
+
 Results update every second, based on the last 15 seconds of audio. FT8 is
 easiest to recognise after a full 15-second cycle.
 
