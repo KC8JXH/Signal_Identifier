@@ -48,10 +48,12 @@ With that you get:
 - UTC time, frequency (laid out like the IC-7300's, **14.074.00**) and mode
   in the top right corner
 - an **S-meter** bar next to the audio level
+- **Power, SWR and ALC** meters while you transmit (Icom radios and Hamlib
+  rigctld), with a red **TX** lamp. See "Transmit meters" below.
 - the waterfall scale labelled in radio frequencies
 - on Icom radios, a **whole-band view** from the radio's own band scope (see below)
 
-It never transmits. The only things it ever changes on the radio are the
+It never transmits, and never keys the radio. The only things it ever changes on the radio are the
 frequency and mode, and only when you click a signal (with "Click a signal to
 tune the radio" ticked) or press a band or mode button.
 
@@ -108,6 +110,24 @@ radios assume 600 Hz). In AM or FM mode the audio frequency is shown instead.
 
 The S-meter uses Icom's published scale for Icom radios and rigctld's
 calibrated reading. For other radios it's approximate.
+
+### Transmit meters
+
+When you transmit, for example from WSJT-X, the **Transmit** row shows what the
+radio's own meters read:
+
+- **Power**: output in watts. Full scale is 100 W, or 10 W for the IC-705 and IC-905.
+- **SWR**: turns amber at 1.5 and red at 2.0. The shaded part of the bar is above 2:1.
+- **ALC**: 0–100 % is inside the radio's ALC zone. If it shows **OVER**, you're
+  overdriving. Turn down the USB MOD level on the radio, or the power/audio
+  slider in your digital-mode program, until ALC stays in the zone (for FT8,
+  ideally close to zero).
+
+The white tick on each bar holds the peak for a moment. On receive the meters
+go dark and the lamp shows **RX**. These meters work on Icom radios and through
+Hamlib rigctld. For other radios the row shows "n/a". The Icom scales follow
+Icom's published CI-V figures, so it's worth comparing them once with the
+radio's own meter.
 
 ## Recording
 

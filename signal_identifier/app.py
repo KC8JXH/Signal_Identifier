@@ -15,7 +15,7 @@ from . import radio as R
 from .classify import F_HI, analyze
 from .bandplan import BAND_BUTTONS, band_button_for, band_target
 from .recorder import Recorder, elapsed_text
-from .widgets import BandScope, Waterfall, meter_fraction
+from .widgets import BandScope, MeterBar, Waterfall, meter_fraction, swr_fraction
 
 MODE_BUTTONS = ["LSB", "USB", "LSB-D", "USB-D", "CW", "RTTY", "AM", "FM"]
 BTN_BG, BTN_ON = "#e9ecef", "#39c5ff"
@@ -287,6 +287,22 @@ class App:
         self.smeter_text = ttk.Label(lvl, text="", width=12)
         self.smeter_text.pack(side="left")
 
+        # -- row 5: transmit meters (read from the radio while it transmits)
+        txr = ttk.Frame(controls, padding=(8, 0, 8, 6))
+        txr.pack(fill="x")
+        ttk.Label(txr, text="Transmit:", width=12).pack(side="left")
+        self.tx_lamp = tk.Label(txr, text=" RX ", font=("Segoe UI", 8, "bold"), bg="#dee2e6", fg="#495057",
+                                padx=4)
+        self.tx_lamp.pack(side="left", padx=(6, 10))
+        self.tx_meters = {}
+        for key, label, zone in (("po", "Power", None), ("swr", "SWR", 0.5), ("alc", "ALC", 2 / 3)):
+            ttk.Label(txr, text=label + ":").pack(side="left")
+            bar = MeterBar(txr, width=120, zone_from=zone)
+            bar.pack(side="left", padx=4)
+            txt = ttk.Label(txr, text="", width=8)
+            txt.pack(side="left", padx=(0, 8))
+            self.tx_meters[key] = (bar, txt)
+
         # -- whole-band view
         bandbar = ttk.Frame(root, padding=(8, 2))
         bandbar.pack(fill="x")
@@ -520,6 +536,7 @@ class App:
                 if st.cw_pitch and st.mode.upper().startswith("CW"):
                     self.lcd_mode.config(text=f"{st.mode}  pitch {st.cw_pitch:.0f}")
                 self._set_meter(st.smeter_db, "" if st.smeter_db is not None else "not available")
+                self._set_tx_meters(st)
                 self._highlight(st)
                 self.wf.set_dial((st.freq_hz, st.mode, st.cw_pitch))
             else:
@@ -527,11 +544,13 @@ class App:
                 self.lcd_mode.config(text="no answer", fg="#ff8787")
                 self.status.config(text=st.message)
                 self._set_meter(None, "")
+                self._set_tx_meters(None)
                 self.wf.set_dial(None)
         else:
             self.lcd_freq.config(text="--.---.--", fg="#4a5560")
             self.lcd_mode.config(text="no radio", fg="#8a96a3")
             self._set_meter(None, "no radio")
+            self._set_tx_meters(None)
             self.wf.set_dial(None)
             self._highlight(None)
         self.root.after(100, self.radio_tick)
@@ -582,6 +601,42 @@ class App:
         self.meter_pos += (goal - self.meter_pos) * (0.6 if goal > self.meter_pos else 0.2)
         self.smeter["value"] = self.meter_pos
         self.smeter_text.config(text=R.s_units_text(db) if db is not None else note)
+
+    def _set_tx_meters(self, st):
+        """Power / SWR / ALC row. The meters only move while the radio transmits."""
+        tx = bool(st and st.tx)
+        if st is None or st.tx is None:
+            self.tx_lamp.config(text=" -- ", bg="#dee2e6", fg="#868e96")
+        else:
+            self.tx_lamp.config(text=" TX " if tx else " RX ", bg="#e03131" if tx else "#dee2e6",
+                                fg="#ffffff" if tx else "#495057")
+        green, amber, red = "#37b24d", "#f59f00", "#e03131"
+        po_bar, po_txt = self.tx_meters["po"]
+        swr_bar, swr_txt = self.tx_meters["swr"]
+        alc_bar, alc_txt = self.tx_meters["alc"]
+        if not tx:
+            for bar, txt in self.tx_meters.values():
+                bar.set(None)
+                txt.config(text="")
+            if st is not None and st.tx is None and st.ok:
+                po_txt.config(text="n/a")
+            return
+        if st.power_w is not None:
+            po_bar.set(st.power_w / (st.max_power or 100), "#1c7ed6")
+            po_txt.config(text=f"{st.power_w:.1f} W" if st.power_w < 10 else f"{st.power_w:.0f} W")
+        else:
+            po_bar.set(None); po_txt.config(text="n/a")
+        if st.swr is not None:
+            swr_bar.set(swr_fraction(st.swr), red if st.swr >= 2 else amber if st.swr >= 1.5 else green)
+            swr_txt.config(text=">10" if st.swr >= 10 else f"{st.swr:.1f}")
+        else:
+            swr_bar.set(None); swr_txt.config(text="n/a")
+        if st.alc is not None:
+            # 0-100 % is the ALC zone (first 2/3 of the bar); beyond it you're overdriving
+            alc_bar.set(st.alc / 150, red if st.alc > 100 else green)
+            alc_txt.config(text="OVER" if st.alc > 100 else f"{st.alc:.0f} %")
+        else:
+            alc_bar.set(None); alc_txt.config(text="n/a")
 
     def wf_tick(self):
         try:

@@ -20,6 +20,54 @@ def meter_fraction(db: float | None) -> float:
     return 0.6 + min(db, 60) / 60 * 0.4
 
 
+def swr_fraction(swr: float | None) -> float:
+    """SWR -> 0..1 on an Icom-style scale: 1.0, 1.5 at 1/4, 2 at 1/2, 3 at 3/4."""
+    if swr is None:
+        return 0.0
+    if swr <= 1.5:
+        return max(0.0, (swr - 1) / 2)
+    if swr <= 2:
+        return 0.25 + (swr - 1.5) / 2
+    if swr <= 3:
+        return 0.5 + (swr - 2) / 4
+    return min(1.0, 0.75 + (swr - 3) / 28)
+
+
+class MeterBar(tk.Canvas):
+    """Small bar meter with a shaded danger zone and a peak-hold tick."""
+
+    def __init__(self, master, width=130, zone_from=None, **kw):
+        super().__init__(master, width=width, height=14, bg="#1b222b", highlightthickness=1,
+                         highlightbackground="#5c6773", **kw)
+        self.w = width
+        self.zone_from = zone_from
+        self.pos = 0.0
+        self.peak, self.peak_t = 0.0, 0.0
+        if zone_from is not None:
+            self.create_rectangle(zone_from * width, 0, width + 2, 16, fill="#4a2326", width=0)
+        self.bar = self.create_rectangle(0, 0, 0, 16, fill="#37b24d", width=0)
+        self.tick = self.create_line(0, 0, 0, 16, fill="#f1f3f5", width=2, state="hidden")
+
+    def set(self, frac: float | None, color: str = "#37b24d"):
+        """frac 0..1, or None to show the meter as idle."""
+        import time
+        now = time.monotonic()
+        if frac is None:
+            self.pos = 0.0
+            self.coords(self.bar, 0, 0, 0, 16)
+            self.itemconfigure(self.tick, state="hidden")
+            return
+        goal = max(0.0, min(1.0, frac))
+        self.pos += (goal - self.pos) * (0.7 if goal > self.pos else 0.3)   # meter-like ballistics
+        if goal >= self.peak or now - self.peak_t > 1.5:
+            self.peak, self.peak_t = goal, now
+        self.coords(self.bar, 0, 0, self.pos * self.w, 16)
+        self.itemconfigure(self.bar, fill=color)
+        x = max(1, self.peak * self.w)
+        self.coords(self.tick, x, 0, x, 16)
+        self.itemconfigure(self.tick, state="normal")
+
+
 # ---------------------------------------------------------------- waterfall
 
 

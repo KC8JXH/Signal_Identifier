@@ -46,7 +46,8 @@ class FakeSerial:
         pass
 
 
-def ic7300(freq=14074000, mode=0x01, data=1, echo=True, meter=120, pitch=128):
+def ic7300(freq=14074000, mode=0x01, data=1, echo=True, meter=120, pitch=128,
+           tx=None, po=0, swr=0, alc=0, addr=0x94):
     def bcd_le(v):
         out = []
         for _ in range(5):
@@ -55,10 +56,24 @@ def ic7300(freq=14074000, mode=0x01, data=1, echo=True, meter=120, pitch=128):
         return bytes(out)
 
     def respond(cmd):
-        assert cmd[:2] == b"\xfe\xfe" and cmd[2] == 0x94 and cmd[3] == 0xE0
+        assert cmd[:2] == b"\xfe\xfe" and cmd[2] == addr and cmd[3] == 0xE0
         reply = cmd if echo else b""  # USB echo of our own command
         c = cmd[4]
-        if c == 0x03:
+        head = b"\xfe\xfe\xe0" + bytes([addr])
+
+        def bcd2(v):
+            return bytes([v // 100, ((v // 10 % 10) << 4) | v % 10])
+        if addr != 0x94:
+            if c == 0x15 and cmd[5] == 0x11:
+                return reply + head + b"\x15\x11" + bcd2(po) + b"\xfd"
+            if c == 0x1C and cmd[5] == 0x00 and tx is not None:
+                return reply + head + b"\x1c\x00" + bytes([tx]) + b"\xfd"
+            return reply
+        if c == 0x1C and cmd[5] == 0x00 and tx is not None and len(cmd) == 7:
+            reply += head + b"\x1c\x00" + bytes([tx]) + b"\xfd"
+        elif c == 0x15 and cmd[5] in (0x11, 0x12, 0x13):
+            reply += head + bytes([0x15, cmd[5]]) + bcd2({0x11: po, 0x12: swr, 0x13: alc}[cmd[5]]) + b"\xfd"
+        elif c == 0x03:
             reply += b"\xfe\xfe\xe0\x94\x03" + bcd_le(freq) + b"\xfd"
         elif c == 0x04:
             reply += b"\xfe\xfe\xe0\x94\x04" + bytes([mode, 1]) + b"\xfd"
@@ -327,3 +342,90 @@ def test_recorder(tmp_path):
     x, rate = read_wav(str(path))
     assert rate == 48000 and len(x) == 48000 and abs(x.mean() - 0.25) < 0.01
     assert elapsed_text(83) == "1:23"
+
+
+# ------------------------------------------------------------- transmit meters
+
+def test_icom_tx_meters():
+    fs = FakeSerial(ic7300(tx=1, po=143, swr=48, alc=60))
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    assert proto.read_tx() is True
+    po, swr, alc = proto.read_tx_meters()
+    assert abs(po - 50) < 0.5 and abs(swr - 1.5) < 0.01 and abs(alc - 50) < 0.5
+
+
+def test_icom_meter_calibration():
+    assert R.icom_power_w(0, 100) == 0 and abs(R.icom_power_w(213, 100) - 100) < 0.01
+    assert abs(R.icom_swr(80) - 2.0) < 0.01 and abs(R.icom_swr(120) - 3.0) < 0.01
+    assert R.icom_swr(0) == 1.0 and R.icom_alc(120) == 100
+
+
+def test_ic705_full_scale_is_10w():
+    fs = FakeSerial(ic7300(tx=1, po=213, addr=0xA4))
+    proto, _ = R.make_protocol("Icom IC-705", "COM3", serial_factory=lambda n, b: fs)
+    assert abs(proto.read_tx_meters()[0] - 10) < 0.05
+
+
+def test_tx_query_never_keys_the_radio():
+    """1C 00 with no data byte only READS the TX state; 1C 00 01 would key the transmitter."""
+    fs = FakeSerial(ic7300(tx=0))
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    assert proto.read_tx() is False
+    sent = [w for w in fs.written if len(w) > 4 and w[4] == 0x1C]
+    assert sent and all(w == b"\xfe\xfe\x94\xe0\x1c\x00\xfd" for w in sent)
+
+
+@pytest.mark.parametrize("tx", [0, 1])
+def test_poller_tx_meters(tx):
+    import time
+    fs = FakeSerial(ic7300(tx=tx, po=213, swr=80, alc=150))
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    try:
+        for _ in range(80):
+            st = p.get()
+            if st.ok and st.tx is not None and (not tx or st.power_w is not None):
+                break
+            time.sleep(0.05)
+        st = p.get()
+        assert st.ok and st.tx is bool(tx)
+        if tx:
+            assert abs(st.power_w - 100) < 0.5 and abs(st.swr - 2.0) < 0.01 and st.alc > 100
+        else:
+            assert st.power_w is None and st.swr is None and st.smeter_db is not None
+    finally:
+        p.stop()
+
+
+def test_poller_without_tx_support_keeps_smeter():
+    """A radio that doesn't answer the TX query still gets its S-meter read."""
+    import time
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: FakeSerial(ic7300()))
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    try:
+        for _ in range(60):
+            if p.get().smeter_db is not None:
+                break
+            time.sleep(0.05)
+        st = p.get()
+        assert st.tx is None and st.smeter_db is not None
+    finally:
+        p.stop()
+
+
+def test_rigctld_tx_meters():
+    answers = {b"t": b"1\n", b"l RFPOWER_METER_WATTS": b"35.5\n", b"l SWR": b"1.3\n", b"l ALC": b"0.25\n"}
+
+    class H(socketserver.StreamRequestHandler):
+        def handle(self):
+            self.wfile.write(answers.get(self.rfile.readline().strip(), b"RPRT -11\n"))
+
+    srv = socketserver.TCPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        proto, _ = R.make_protocol("Hamlib rigctld", net_port=srv.server_address[1])
+        assert proto.read_tx() is True
+        assert proto.read_tx_meters() == (35.5, 1.3, 25.0)
+    finally:
+        srv.shutdown()
+        srv.server_close()

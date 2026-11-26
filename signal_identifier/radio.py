@@ -17,7 +17,7 @@ import socket
 import threading
 import time
 import xmlrpc.client
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # ------------------------------------------------------------------ radio list
 
@@ -26,6 +26,8 @@ ICOM_ADDRESSES = {
     "Icom IC-7100": 0x88, "Icom IC-7851": 0x8E, "Icom IC-7600": 0x7A, "Icom IC-7410": 0x80,
     "Icom IC-7200": 0x76, "Icom IC-718": 0x5E, "Icom IC-905": 0xAC,
 }
+# Full-scale output power (W) for the Po meter. Anything not listed: 100 W.
+ICOM_MAX_POWER = {"Icom IC-705": 10.0, "Icom IC-905": 10.0, "Icom IC-7851": 200.0}
 
 # name -> (protocol, default baud)
 RADIOS: dict[str, tuple[str, int]] = {"No radio connection": ("none", 0)}
@@ -57,6 +59,11 @@ class RadioState:
     message: str = ""
     smeter_db: float | None = None   # dB relative to S9 (S9 = 0, S1 = -48)
     cw_pitch: float | None = None    # Hz, when the radio tells us
+    tx: bool | None = None           # transmitting? None = radio doesn't say
+    power_w: float | None = None     # transmit meters, only while transmitting
+    swr: float | None = None
+    alc: float | None = None         # percent of the ALC zone (over 100 = too much drive)
+    max_power: float = 100.0         # full scale of the power meter, W
 
     def freq_text(self) -> str:
         return format_freq(self.freq_hz) if self.freq_hz else "-"
@@ -201,6 +208,38 @@ class SerialProtocol:
     def read_cw_pitch(self) -> float | None:
         return None
 
+    def read_tx(self) -> bool | None:
+        """True while transmitting, False on receive, None if not available."""
+        return None
+
+    def read_tx_meters(self) -> tuple[float | None, float | None, float | None]:
+        """(power in W, SWR, ALC in % of zone) while transmitting."""
+        return None, None, None
+
+
+def _interp(x: float, pts) -> float:
+    """Straight lines through (raw, value) calibration points."""
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return pts[-1][1]
+
+
+# Icom meter calibration, from the IC-7300 / IC-705 / IC-9700 CI-V reference.
+def icom_power_w(raw: int, max_w: float) -> float:
+    """Po meter 0-255: 0 = 0 %, 143 = 50 %, 213 = 100 % of full power."""
+    return _interp(raw, [(0, 0.0), (143, 0.5), (213, 1.0), (255, 1.2)]) * max_w
+
+
+def icom_swr(raw: int) -> float:
+    """SWR meter 0-255: 0 = 1.0, 48 = 1.5, 80 = 2.0, 120 = 3.0."""
+    return _interp(raw, [(0, 1.0), (48, 1.5), (80, 2.0), (120, 3.0), (155, 4.0), (255, 10.0)])
+
+
+def icom_alc(raw: int) -> float:
+    """ALC meter 0-255: 0-120 is the ALC zone, shown as 0-100 %."""
+    return raw / 120 * 100
+
 
 @dataclass
 class ScopeSweep:
@@ -228,9 +267,10 @@ class IcomCIV(SerialProtocol):
     CONTROLLER = 0xE0
     OK, NG = 0xFB, 0xFA
 
-    def __init__(self, port, address: int):
+    def __init__(self, port, address: int, max_power: float = 100.0):
         super().__init__(port)
         self.address = address
+        self.max_power = max_power
         self._cv = threading.Condition()
         self._replies: list[bytes] = []   # frames from the radio: cmd, data...
         self._write_lock = threading.Lock()
@@ -325,6 +365,20 @@ class IcomCIV(SerialProtocol):
             return None
         raw = _bcd_be_to_int(d[:2])  # 0000 = S0, 0120 = S9, 0241 = S9+60
         return icom_meter_db(raw)
+
+    def read_tx(self):
+        d = self._query(0x1C, 0x00, timeout=0.2)
+        return bool(d[0]) if d else None
+
+    def _meter(self, sub: int) -> int | None:
+        d = self._query(0x15, sub, timeout=0.2)
+        return _bcd_be_to_int(d[:2]) if d and len(d) >= 2 else None
+
+    def read_tx_meters(self):
+        po, swr, alc = self._meter(0x11), self._meter(0x12), self._meter(0x13)
+        return (None if po is None else icom_power_w(po, self.max_power),
+                None if swr is None else icom_swr(swr),
+                None if alc is None else icom_alc(alc))
 
     def read_cw_pitch(self):
         d = self._query(0x14, 0x09, timeout=0.3)
@@ -633,11 +687,23 @@ class Rigctld:
         return True
 
     def read_smeter(self):
+        return self._number("l STRENGTH")
+
+    def _number(self, cmd: str) -> float | None:
         try:
-            v = self._query("l STRENGTH")
+            v = self._query(cmd)
             return float(v[0]) if v and not v[0].startswith("RPRT") else None
         except Exception:
             return None
+
+    def read_tx(self):
+        v = self._number("t")
+        return None if v is None else v != 0
+
+    def read_tx_meters(self):
+        alc = self._number("l ALC")             # Hamlib: 0.0-1.0
+        return (self._number("l RFPOWER_METER_WATTS"), self._number("l SWR"),
+                None if alc is None else alc * 100)
 
 
 # ------------------------------------------------------------------ poller
@@ -672,7 +738,7 @@ def make_protocol(radio: str, port_name: str = "", baud: int = 0, address: int |
         pass
     if proto == "icom":
         addr = address if address is not None else ICOM_ADDRESSES.get(radio, 0x94)
-        return IcomCIV(sp, addr), sp
+        return IcomCIV(sp, addr, ICOM_MAX_POWER.get(radio, 100.0)), sp
     if proto == "yaesu":
         return YaesuNew(sp), sp
     if proto == "yaesu_old":
@@ -713,6 +779,7 @@ class RadioPoller:
         last_full = 0.0
         last_pitch = -1e9
         meter_ok = True
+        tx_ok = hasattr(self.protocol, "read_tx")
         pitch = None
         while self.running:
             now = time.monotonic()
@@ -730,22 +797,42 @@ class RadioPoller:
                             except Exception:
                                 pass
                         with self.lock:
-                            old = self.state
-                            self.state = RadioState(freq, mode, True, "", old.smeter_db, pitch)
+                            self.state = replace(self.state, freq_hz=freq, mode=mode, ok=True,
+                                                 message="", cw_pitch=pitch)
                     else:
                         fails += 1
                         self._fail("Radio isn't answering. Check the port, speed (baud) and radio model.", fails)
                 except Exception as e:
                     fails += 1
                     self._fail(f"Radio connection problem: {e}", fails)
-            if meter_ok and self.state.ok:
+            tx = None
+            if tx_ok and self.state.ok:
+                try:
+                    tx = self.protocol.read_tx()
+                    if tx is None:
+                        tx_ok = False  # radio doesn't report it; stop asking
+                except Exception:
+                    tx_ok = False
+            if tx:
+                # Power, SWR and ALC only mean something while transmitting.
+                try:
+                    po, swr, alc = self.protocol.read_tx_meters()
+                except Exception:
+                    po = swr = alc = None
+                with self.lock:
+                    self.state = replace(self.state, tx=True, power_w=po, swr=swr, alc=alc,
+                                         max_power=getattr(self.protocol, "max_power", 100.0))
+            elif meter_ok and self.state.ok:
+                with self.lock:
+                    self.state = replace(self.state, tx=tx, power_w=None, swr=None, alc=None)
                 try:
                     db = self.protocol.read_smeter()
                     with self.lock:
                         self.state.smeter_db = db
                 except Exception:
                     meter_ok = False  # radio doesn't support it; stop asking
-            time.sleep(self.meter_interval if meter_ok and self.state.ok else min(self.interval, 0.5))
+            busy = (meter_ok or tx_ok) and self.state.ok
+            time.sleep(self.meter_interval if busy else min(self.interval, 0.5))
 
     def _fail(self, msg: str, fails: int):
         with self.lock:
@@ -797,8 +884,7 @@ class RadioPoller:
 
     def get(self) -> RadioState:
         with self.lock:
-            st = self.state
-            return RadioState(st.freq_hz, st.mode, st.ok, st.message, st.smeter_db, st.cw_pitch)
+            return replace(self.state)
 
     def stop(self):
         self.running = False
