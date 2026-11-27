@@ -621,7 +621,17 @@ def test_nothing_transmits_until_tune_is_pressed():
         p.stop()
 
 
-@pytest.mark.parametrize("states,expect", [([2, 2, 2, 1], "done"), ([2, 2, 0], "failed")])
+@pytest.mark.parametrize("states,expect", [
+    ([2, 2, 2, 1], "done"),
+    ([2, 2, 0], "failed"),
+    # tuner was OFF on this band and the radio takes a moment to start tuning:
+    # the early "off" readings are not a failure
+    ([0] * 12 + [2, 2, 2, 1], "done"),
+    # tuner was already ON: an early "on" is not the end of the tune
+    ([1] * 12 + [2, 2, 2, 0], "failed"),
+    # a quick tune from the radio's memory, over before we ever saw it: tuner on -> tuned
+    ([1], "done"),
+])
 def test_poller_follows_the_tune(states, expect):
     import time
     fs = FakeSerial(ic7300(tx=0, tuner=list(states)))
@@ -634,7 +644,7 @@ def test_poller_follows_the_tune(states, expect):
             time.sleep(0.05)
         p.start_tune()
         assert p.tune_status == "starting"
-        for _ in range(80):
+        for _ in range(140):
             if p.tune_status in ("done", "failed"):
                 break
             time.sleep(0.05)
