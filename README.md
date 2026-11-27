@@ -192,7 +192,8 @@ You can also analyse a saved file: `python -m signal_identifier recordings\yourf
 exactly like holding the **TUNER** button on the radio: the radio sends a
 low-power carrier, the tuner finds a match, and the radio goes back to receive
 by itself. The button shows **TUNING…** while that happens, then **TUNED** or
-**NO MATCH**, and the status line gives the SWR. The Power and SWR meters show
+**NO MATCH** (a log of the tune is then saved in `tune_log.txt` in the
+program's folder). The Power and SWR meters show
 the tune carrier while it's on the air.
 
 - This is the only time the program makes the radio transmit, and only when

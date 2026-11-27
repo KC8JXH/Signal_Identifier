@@ -392,9 +392,8 @@ class App:
                                  bg=BTN_BG, fg="#c92a2a", font=("Segoe UI", 9, "bold"))
         self.rec_btn.pack(side="left")
         self.recorder = None
-        self.status = ttk.Label(top, text="Open Settings (top left) to choose the sound input and start listening.",
-                                padding=(10, 0))
-        self.status.pack(side="left", fill="x")
+        # Status messages are kept (the program still writes them) but not shown.
+        self.status = ttk.Label(top, text="", padding=(10, 0))
 
         # -- Settings menu: sound input, radio connection, display options, clock
         menubar = tk.Menu(root)
