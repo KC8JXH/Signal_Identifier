@@ -924,6 +924,8 @@ class RadioPoller:
         self._tune_req = False
         self._tune_since = 0.0
         self._tune_seen = False    # has the radio been seen tuning since Tune was pressed?
+        self._tune_active_at = 0.0
+        self.tune_log = []         # (seconds, tuner, transmitting, SWR) during the last tune
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -1088,7 +1090,8 @@ class RadioPoller:
             self.tune_status = "starting"
             self.tune_swr = None
 
-    TUNE_START_WINDOW = 4.0   # s to see the tune begin before trusting a plain on/off reading
+    TUNE_QUIET_LIMIT = 15.0   # s: if the tune is never seen, decide from the tuner after this
+    TUNE_TIMEOUT = 30.0
 
     def _watch_tune(self, now: float):
         with self.lock:
@@ -1104,28 +1107,47 @@ class RadioPoller:
             self.tune_status = "tuning" if ok else "refused"
             self._tune_since = now
             self._tune_seen = False
+            self._tune_active_at = 0.0
+            self.tune_log = [(0.0, "start", "accepted" if ok else "refused", None)]
             return
         if self.tune_status != "tuning" or now - self._tune_since < 0.3:
             return
+        elapsed = now - self._tune_since
         try:
             st = self.protocol.read_tuner()
         except Exception:
             st = None
-        if st == "tuning" or self.state.tx:
-            # The radio is tuning (or sending the tune carrier). Only after
-            # seeing this does "on"/"off" mean the tune has finished: before,
-            # it's just how the tuner was left on this band.
+        try:
+            tx = self.protocol.read_tx()        # asked directly: don't rely on the meter loop
+        except Exception:
+            tx = None
+        if tx is None:
+            tx = self.state.tx
+        swr = self.state.swr
+        self.tune_log.append((round(elapsed, 2), st, tx, swr))
+        del self.tune_log[:-200]
+        if st == "tuning" or tx:
+            # The radio is tuning / sending the tune carrier. Only after it
+            # stops does "on"/"off" mean the result: before, it's just how the
+            # tuner was left on this band.
             self._tune_seen = True
-            if self.state.swr is not None:
-                self.tune_swr = self.state.swr
+            self._tune_active_at = now
+            if swr is not None:
+                self.tune_swr = swr
             return
-        elapsed = now - self._tune_since
-        if self._tune_seen or elapsed > self.TUNE_START_WINDOW:
-            # finished (or a quick tune from the radio's memory that we didn't catch)
+        if self._tune_seen:
+            if now - self._tune_active_at < 0.5:
+                return                          # make sure it has really finished
             if st == "on":
                 self.tune_status = "done"
             elif st == "off":
                 self.tune_status = "failed"     # the radio gave up (no match found)
+        elif elapsed > self.TUNE_QUIET_LIMIT:
+            # never saw the tune itself (e.g. a quick tune from the radio's memory)
+            if st == "on":
+                self.tune_status = "done"
+            elif st == "off":
+                self.tune_status = "failed"
         if self.tune_status == "tuning" and elapsed > self.TUNE_TIMEOUT:
             self.tune_status = "failed"
 

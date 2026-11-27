@@ -866,7 +866,8 @@ class App:
             swr_txt = f" (SWR {swr:.1f})" if swr else ""
             self.status.config(text={
                 "done": f"Tuned{swr_txt}. Ready to transmit.",
-                "failed": f"The tuner couldn't find a match{swr_txt}. Check the antenna and that you're on a ham band.",
+                "failed": f"The tuner couldn't find a match{swr_txt}. Check the antenna and that you're on a ham band."
+                          + self._save_tune_log(),
                 "refused": "The radio didn't start tuning. Check that its internal tuner is available on this band.",
                 "unsupported": "Tune works with Icom radios (and through Hamlib rigctld).",
             }[status])
@@ -921,6 +922,20 @@ class App:
         right after we changed band/mode/filter, while the radio is switching."""
         if st.filter in (1, 2, 3) and st.freq_hz and time.monotonic() - self._radio_cmd_at > 3:
             self._remember_filter(st.freq_hz, st.filter)
+
+    def _save_tune_log(self) -> str:
+        """Save what the radio reported during the tune (to see why it said no match)."""
+        try:
+            st = self.radio.get()
+            lines = [f"IC7300 Rig Interface tune log  {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                     f"frequency {st.freq_hz}  mode {st.mode}",
+                     "seconds  tuner  transmitting  SWR"]
+            lines += [f"{t:7}  {a!s:7}  {b!s:12}  {c!s}" for t, a, b, c in self.radio.tune_log]
+            path = Path(__file__).resolve().parent.parent / "tune_log.txt"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return f" Details saved in {path}."
+        except Exception:
+            return ""
 
     def _mode_click(self, mode: str):
         if self.radio is None:

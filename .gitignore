@@ -5,3 +5,4 @@ __pycache__/
 *.wav
 recordings/
 signal_identifier_error.log
+tune_log.txt
