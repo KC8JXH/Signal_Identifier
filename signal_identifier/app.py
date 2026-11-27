@@ -926,9 +926,9 @@ class App:
         if self.radio is None:
             self.status.config(text="Connect the radio first to change mode.")
             return
+        st = self.radio.get()
         if mode == "DATA":
             # like the radio's DATA key: data mode on/off for the sideband you're on
-            st = self.radio.get()
             cur = (st.mode or "").upper()
             if cur.endswith("-D"):
                 mode = cur[:-2]
