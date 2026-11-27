@@ -1,4 +1,4 @@
-"""The Signal Identifier window."""
+"""The IC7300 Rig Interface window."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from .bandplan import BAND_BUTTONS, band_button_for, band_target
 from .recorder import Recorder, elapsed_text
 from .widgets import BandScope, MeterBar, Waterfall, meter_fraction, swr_fraction
 
-MODE_BUTTONS = ["LSB", "USB", "LSB-D", "USB-D", "CW", "RTTY", "AM", "FM"]
+MODE_BUTTONS = ["LSB", "USB", "CW", "RTTY", "AM", "FM"]
+APP_NAME = "IC7300 Rig Interface"
 BTN_BG, BTN_ON = "#e9ecef", "#39c5ff"
 
 WINDOW_SECONDS = 15.0   # how much recent audio each analysis looks at
@@ -199,6 +200,90 @@ def save_settings(d: dict) -> None:
         pass
 
 
+# ---------------------------------------------------------------- Settings menu helpers
+
+class MenuChoice:
+    """A pick-list inside the Settings menu (a submenu of radio items) that
+    behaves like the read-only drop-down box it replaced: get(), set(),
+    current(), ["values"] and config(state=...). The submenu's own label shows
+    the current choice, e.g. "Sound input: USB Audio CODEC"."""
+
+    def __init__(self, parent: tk.Menu, title: str, values=(), on_select=None, extras=()):
+        self.parent, self.title, self.on_select, self.extras = parent, title, on_select, list(extras)
+        self.menu = tk.Menu(parent, tearoff=0)
+        parent.add_cascade(label=title, menu=self.menu)
+        self.index = parent.index("end")
+        self.var = tk.StringVar()
+        self.var.trace_add("write", lambda *a: self._label())
+        self._values = list(values)
+        self._rebuild()
+
+    def __getitem__(self, key):
+        return tuple(self._values) if key == "values" else None
+
+    def __setitem__(self, key, value):
+        if key == "values":
+            self._values = list(value)
+            self._rebuild()
+
+    def get(self) -> str:
+        return self.var.get()
+
+    def set(self, value: str):
+        self.var.set(value)
+
+    def current(self, index=None):
+        if index is None:
+            try:
+                return self._values.index(self.var.get())
+            except ValueError:
+                return -1
+        self.var.set(self._values[index])
+
+    def config(self, state=None, **kw):
+        if state is not None:
+            self.parent.entryconfig(self.index, state="disabled" if state == "disabled" else "normal")
+
+    configure = config
+
+    def bind(self, *a, **kw):
+        pass
+
+    def _rebuild(self):
+        self.menu.delete(0, "end")
+        for v in self._values:
+            self.menu.add_radiobutton(label=v, variable=self.var, value=v, command=self._picked)
+        if self.extras:
+            self.menu.add_separator()
+            for label, cmd in self.extras:
+                self.menu.add_command(label=label, command=cmd)
+        self._label()
+
+    def _label(self):
+        v = self.var.get()
+        if len(v) > 42:
+            v = v[:40] + "…"
+        self.parent.entryconfig(self.index, label=f"{self.title}: {v}" if v else self.title)
+
+    def _picked(self):
+        if self.on_select:
+            self.on_select()
+
+
+class MenuCommand:
+    """A Settings-menu item standing in for a button: config(text=...) renames it."""
+
+    def __init__(self, menu: tk.Menu, label: str, command):
+        menu.add_command(label=label, command=command)
+        self.menu, self.index = menu, menu.index("end")
+
+    def config(self, text=None, **kw):
+        if text is not None:
+            self.menu.entryconfig(self.index, label=text)
+
+    configure = config
+
+
 # ---------------------------------------------------------------- window
 
 class App:
@@ -209,7 +294,7 @@ class App:
         self.last_result = None
         self.meter_pos = 0.0
         self.settings = load_settings()
-        root.title("Signal Identifier")
+        root.title(APP_NAME)
 
         # Fixed starting size, never resized by the program itself.
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -224,6 +309,7 @@ class App:
         info = tk.Frame(header, bg="#0b0f14", padx=14, pady=6)
         info.pack(side="right", anchor="n", padx=8, pady=8)
         self.utc_lbl = tk.Label(info, text="", font=("Consolas", 12), bg="#0b0f14", fg="#8a96a3", anchor="e")
+        self.clock_mode = tk.StringVar(value="local" if self.settings.get("clock") == "local" else "utc")
         self.utc_lbl.pack(fill="x")
         frow = tk.Frame(info, bg="#0b0f14")
         frow.pack(fill="x")
@@ -263,56 +349,55 @@ class App:
         for i, m in enumerate(MODE_BUTTONS):
             b = tk.Button(modes, text=m, width=6, relief="raised", bg=BTN_BG, font=("Segoe UI", 8, "bold"),
                           padx=0, pady=0, command=lambda m=m: self._mode_click(m))
-            b.grid(row=i % 4, column=i // 4, padx=1, pady=1)
+            b.grid(row=i // 2, column=i % 2, padx=1, pady=1)
             self.mode_btns[m] = b
         # Tune: runs the radio's antenna tuner, like holding its TUNER button.
         self.tune_btn = tk.Button(modes, text="TUNE", width=13, relief="raised", bg=BTN_BG, fg="#c92a2a",
                                   font=("Segoe UI", 8, "bold"), padx=0, pady=1, command=self._tune_click)
-        self.tune_btn.grid(row=4, column=0, columnspan=2, pady=(5, 1))
+        self.tune_btn.grid(row=len(MODE_BUTTONS) // 2, column=0, columnspan=2, pady=(5, 1))
         self._tune_seen = ""          # last tune result already reported
         self._tune_shown_at = 0.0
 
         controls = tk.Frame(header)
         controls.pack(side="left", fill="x", expand=True)
 
-        # -- row 1: sound input
+        # -- row 1: Record and the status line
         top = ttk.Frame(controls, padding=(8, 8, 8, 2))
         top.pack(fill="x")
-        ttk.Label(top, text="Sound input:", width=12).pack(side="left")
-        self.device_box = ttk.Combobox(top, width=33, state="readonly")
-        self.device_box.pack(side="left", padx=6)
-        self.start_btn = ttk.Button(top, text="Start listening", command=self.toggle)
-        self.start_btn.pack(side="left")
         self.rec_btn = tk.Button(top, text="● Record", width=16, command=self.toggle_record,
                                  bg=BTN_BG, fg="#c92a2a", font=("Segoe UI", 9, "bold"))
-        self.rec_btn.pack(side="left", padx=6)
+        self.rec_btn.pack(side="left")
         self.recorder = None
+        self.status = ttk.Label(top, text="Open Settings (top left) to choose the sound input and start listening.",
+                                padding=(10, 0))
+        self.status.pack(side="left", fill="x")
+
+        # -- Settings menu: sound input, radio connection, display options, clock
+        menubar = tk.Menu(root)
+        sm = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Settings", menu=sm)
+        root.config(menu=menubar)
+        self.settings_menu = sm
+        self.start_btn = MenuCommand(sm, "Start listening", self.toggle)
+        self.device_box = MenuChoice(sm, "Sound input")
         # Switch the mode labels on the waterfall (and the identifying behind them) on or off.
         self.identify = tk.BooleanVar(value=self.settings.get("identify", True))
-        ttk.Checkbutton(top, text="Identify signals", variable=self.identify,
-                        command=self._save_identify).pack(side="left", padx=6)
-
-        # -- row 2: radio (CAT) connection
-        rrow = ttk.Frame(controls, padding=(8, 2))
-        rrow.pack(fill="x")
-        ttk.Label(rrow, text="Radio:", width=12).pack(side="left")
-        self.radio_box = ttk.Combobox(rrow, values=list(R.RADIOS), width=24, state="readonly")
-        self.radio_box.pack(side="left", padx=6)
-        self.radio_box.bind("<<ComboboxSelected>>", self._radio_changed)
-        ttk.Label(rrow, text="Port:").pack(side="left")
-        self.port_box = ttk.Combobox(rrow, width=16, state="readonly")
-        self.port_box.pack(side="left", padx=4)
-        ttk.Button(rrow, text="↻", width=3, command=self._fill_ports).pack(side="left")
-        ttk.Label(rrow, text="Speed:").pack(side="left", padx=(8, 0))
-        self.baud_box = ttk.Combobox(rrow, values=[str(b) for b in R.BAUD_RATES], width=8, state="readonly")
-        self.baud_box.pack(side="left", padx=4)
-        self.radio_btn = ttk.Button(rrow, text="Connect radio", width=15, command=self.toggle_radio)
-        self.radio_btn.pack(side="left", padx=6)
-
-        # -- row 3: status
-        self.status = ttk.Label(controls, text="Pick the sound input your radio is plugged into, then press Start listening.",
-                                padding=(8, 2))
-        self.status.pack(fill="x")
+        sm.add_checkbutton(label="Identify signals", variable=self.identify, command=self._save_identify)
+        sm.add_separator()
+        self.radio_btn = MenuCommand(sm, "Connect radio", self.toggle_radio)
+        self.radio_box = MenuChoice(sm, "Radio", list(R.RADIOS), on_select=self._radio_changed)
+        self.port_box = MenuChoice(sm, "Port", extras=[("Refresh the list", self._fill_ports)])
+        self.baud_box = MenuChoice(sm, "Speed", [str(b) for b in R.BAUD_RATES])
+        sm.add_separator()
+        self.click_tune = tk.BooleanVar(value=self.settings.get("click_to_tune", True))
+        sm.add_checkbutton(label="Click to tune radio", variable=self.click_tune, command=self._save_click_tune)
+        sm.add_command(label="Show whole band", command=self._whole_band)
+        self.keep_scope = tk.BooleanVar(value=self.settings.get("keep_scope_on", True))
+        sm.add_checkbutton(label="Keep scope on", variable=self.keep_scope, command=self._save_keep_scope)
+        sm.add_separator()
+        sm.add_radiobutton(label="UTC time", variable=self.clock_mode, value="utc", command=self._save_clock)
+        sm.add_radiobutton(label="Local time (computer clock)", variable=self.clock_mode, value="local",
+                           command=self._save_clock)
 
         # -- row 4: audio level and S-meter bars side by side
         lvl = ttk.Frame(controls, padding=(8, 2, 8, 6))
@@ -347,8 +432,6 @@ class App:
         # -- whole-band view
         bandbar = ttk.Frame(root, padding=(8, 2))
         bandbar.pack(fill="x")
-        self.band_title = ttk.Label(bandbar, text="Band scope", font=("Segoe UI", 9, "bold"), width=12)
-        self.band_title.pack(side="left")
         self.band_btns = {}
         bb = tk.Frame(bandbar)
         bb.pack(side="left", padx=(0, 6))
@@ -357,13 +440,6 @@ class App:
                           command=lambda n=name: self._band_button(n))
             b.pack(side="left", padx=1)
             self.band_btns[name] = b
-        self.click_tune = tk.BooleanVar(value=self.settings.get("click_to_tune", True))
-        ttk.Checkbutton(bandbar, text="Click to tune radio", variable=self.click_tune,
-                        command=self._save_click_tune).pack(side="left", padx=12)
-        ttk.Button(bandbar, text="Show whole band", command=self._whole_band).pack(side="left")
-        self.keep_scope = tk.BooleanVar(value=self.settings.get("keep_scope_on", True))
-        ttk.Checkbutton(bandbar, text="Keep scope on", variable=self.keep_scope,
-                        command=self._save_keep_scope).pack(side="left", padx=8)
         bf = tk.Frame(root, padx=8)
         bf.pack(fill="x")
         self.band = BandScope(bf, on_click=self._band_click)
@@ -393,19 +469,16 @@ class App:
     # -- clock, band view ---------------------------------------------------------
 
     def clock_tick(self):
-        self.utc_lbl.config(text=time.strftime("%H:%M:%S UTC", time.gmtime()))
+        if self.clock_mode.get() == "local":
+            self.utc_lbl.config(text=time.strftime("%H:%M:%S", time.localtime()) + " Local")
+        else:
+            self.utc_lbl.config(text=time.strftime("%H:%M:%S UTC", time.gmtime()))
         if self.recorder is not None:
             self.rec_btn.config(text=f"■ Stop rec  {elapsed_text(self.recorder.seconds)}")
         self.root.after(250, self.clock_tick)
 
     def band_tick(self):
         try:
-            st0 = self.radio.get() if self.radio is not None else None
-            from .bandplan import band_for
-            band = band_for(st0.freq_hz) if st0 is not None and st0.ok else None
-            if band is None and self.band.view:
-                band = band_for(sum(self.band.view) / 2)
-            self.band_title.config(text=f"{band[2]} band" if band else "Band scope")
             if self.radio is not None and self.radio.has_scope:
                 st = self.radio.get()
                 self.band.update_scope(self.radio.scope(), st if st.ok else None)
@@ -418,7 +491,7 @@ class App:
                     self.band.show_no_signal(
                         "Trying to switch the radio's scope back on…" if self.keep_scope.get() else
                         "The radio stopped sending scope data. Turn its scope on, or tick "
-                        "\"Keep scope on\".")
+                        "Settings > Keep scope on.")
             elif self.radio is not None:
                 self.band.set_message("The whole-band view needs an Icom radio (IC-7300, IC-705, IC-7610, IC-9700).")
             else:
@@ -426,6 +499,11 @@ class App:
         except Exception as e:
             self.band.set_message(f"Band view problem: {e}")
         self.root.after(100, self.band_tick)
+
+    def _save_clock(self):
+        self.settings["clock"] = self.clock_mode.get()
+        save_settings(self.settings)
+        self.utc_lbl.config(text="")
 
     def _save_keep_scope(self):
         self.settings["keep_scope_on"] = bool(self.keep_scope.get())
@@ -440,7 +518,7 @@ class App:
     def _radio_for_click(self):
         """The radio state if a click may tune it; otherwise say why not."""
         if not self.click_tune.get():
-            self.status.config(text="Click-to-tune is switched off (tick 'Click to tune radio').")
+            self.status.config(text="Click-to-tune is switched off (Settings > Click to tune radio).")
             return None
         if self.radio is None:
             self.status.config(text="Connect the radio first to tune by clicking.")
@@ -500,7 +578,6 @@ class App:
         self.radio.tune(hz)
         self.tune_pending = (hz, time.monotonic())
         self.lcd_freq.config(text=R.format_freq(hz))
-        self.status.config(text=f"Tuning the radio to {R.format_freq(hz)}")
 
     def _freq_step(self, sign: int):
         st = self._radio_ready()
@@ -529,7 +606,6 @@ class App:
             self.status.config(text=f"Click-to-tune doesn't work in {st.mode} mode. Switch to USB, LSB, CW or RTTY.")
             return
         self.radio.tune(dial)
-        self.status.config(text=f"Tuning the radio to {R.format_freq(round(dial / 10) * 10)}")
 
     def _band_click(self, hz: float):
         """Click in the whole-band view. The scope is coarse (~700 Hz per point on
@@ -556,7 +632,7 @@ class App:
 
     def _whole_band(self):
         if self.radio is None or not self.radio.has_scope:
-            messagebox.showinfo("Signal Identifier", "Connect an Icom radio first.")
+            messagebox.showinfo(APP_NAME, "Connect an Icom radio first.")
             return
         self.radio.scope_whole_band()
         self.status.config(text="Set the radio's scope to centre mode, ±500 kHz, so the whole band is visible.")
@@ -638,7 +714,7 @@ class App:
         if proto not in R.NETWORK_PROTOCOLS:
             k = self.port_box.current()
             if not self.ports or k < 0:
-                messagebox.showinfo("Signal Identifier",
+                messagebox.showinfo(APP_NAME,
                                     "No COM port found for the radio.\n\nFor an IC-7300: plug in the USB cable, "
                                     "turn the radio on, and install Icom's USB driver if Windows "
                                     "doesn't recognise it. Then press ↻.")
@@ -650,7 +726,7 @@ class App:
         except Exception as e:
             hint = ("\n\nIf WSJT-X or another program is using the radio, close it, or choose "
                     "'flrig' as the radio here so both can share it.")
-            messagebox.showerror("Signal Identifier", f"Couldn't open the radio on {port}:\n\n{e}{hint}")
+            messagebox.showerror(APP_NAME, f"Couldn't open the radio on {port}:\n\n{e}{hint}")
             return
         self.radio = R.RadioPoller(protocol, sp)
         self.radio.keep_scope_on = bool(self.keep_scope.get())
@@ -696,8 +772,8 @@ class App:
         cur_mode = st.mode.upper() if st else ""
         for m, b in self.mode_btns.items():
             on = cur_mode == m or (m == "RTTY" and cur_mode in ("RTTY", "RTTY-L", "FSK")) \
-                or (m == "USB-D" and cur_mode in ("DATA-U", "PKTUSB", "DIG")) \
-                or (m == "LSB-D" and cur_mode in ("DATA-L", "PKTLSB")) \
+                or (m == "USB" and cur_mode in ("USB-D", "DATA-U", "PKTUSB", "DIG")) \
+                or (m == "LSB" and cur_mode in ("LSB-D", "DATA-L", "PKTLSB")) \
                 or (m == "CW" and cur_mode in ("CW-U", "CW-R", "CW-L"))
             b.config(bg=BTN_ON if on else BTN_BG)
         cur_band = band_button_for(st.freq_hz) if st else None
@@ -820,7 +896,7 @@ class App:
     def wf_tick(self):
         try:
             if self.source is None:
-                self.wf.set_message("Not listening. Press Start listening.")
+                self.wf.set_message("Not listening. Choose Settings > Start listening.")
             else:
                 if self.wf.message.startswith("Not listening"):
                     self.wf.set_message("Listening… waiting for audio")
@@ -849,9 +925,10 @@ class App:
         k = self.device_box.current()
         if k < 0 or not self.devices:
             if quiet:
-                self.status.config(text="Pick the sound input your radio is plugged into, then press Start listening.")
+                self.status.config(text="Choose the sound input your radio is plugged into (Settings > Sound input), "
+                                        "then Settings > Start listening.")
             else:
-                messagebox.showinfo("Signal Identifier", "Pick a sound input first.")
+                messagebox.showinfo(APP_NAME, "Pick a sound input first.")
             return
         try:
             self.source = SoundCardSource(self.devices[k][0])
@@ -862,7 +939,7 @@ class App:
             if quiet:
                 self.status.config(text=msg)
             else:
-                messagebox.showerror("Signal Identifier", msg)
+                messagebox.showerror(APP_NAME, msg)
             return
         self.settings["sound_input"] = self.devices[k][1]
         self.settings["listen_autostart"] = True
@@ -960,7 +1037,7 @@ class App:
                 pass
             return
         if self.source is None:
-            messagebox.showinfo("Signal Identifier", "Start listening first, then press Record.")
+            messagebox.showinfo(APP_NAME, "Start listening first (Settings > Start listening), then press Record.")
             return
         st = self._radio_state()
         name = time.strftime("%Y-%m-%d_%H%M%SZ", time.gmtime())
@@ -969,7 +1046,7 @@ class App:
         try:
             self.recorder = Recorder(RECORDINGS_DIR / f"{name}.wav", self.source.rate)
         except Exception as e:
-            messagebox.showerror("Signal Identifier", f"Couldn't start recording:\n\n{e}")
+            messagebox.showerror(APP_NAME, f"Couldn't start recording:\n\n{e}")
             return
         self.source.ring.listeners.append(self.recorder.feed)
         self.rec_btn.config(text="■ Stop rec  0:00", bg="#c92a2a", fg="white")

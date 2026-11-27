@@ -1,4 +1,4 @@
-# Signal Identifier
+# IC7300 Rig Interface
 
 Listens to your radio through your computer's sound card and tells you what kind
 of signal you're hearing: **CW, SSB voice, FT8, FT4, RTTY, PSK31, SSTV
@@ -15,13 +15,13 @@ just noise. It shows a live waterfall with each signal labelled.
 2. **Unzip it.** Open your Downloads folder, right-click the ZIP file, choose
    **Extract All…**, then click **Extract**.
 3. **Install and start it.** In the folder that opens, double-click
-   **`Start Signal Identifier`**.
+   **`Start IC7300 Rig Interface`**.
    - If Windows shows a blue "Windows protected your PC" box, click
      **More info**, then **Run anyway**.
    - A black window shows the setup. The first time takes a few minutes:
      if the computer doesn't have Python yet, it's installed automatically.
    - The program is installed in **`C:\SignalIdentifier`** and starts.
-   - A **Signal Identifier** icon appears on the Desktop. From then on, start
+   - An **IC7300 Rig Interface** icon appears on the Desktop. From then on, start
      the program with that icon: it opens with no black window at all.
    - The download tidies itself away: a few seconds after the program starts,
      the unzipped folder and the downloaded ZIP are deleted.
@@ -32,24 +32,33 @@ If Python can't be installed automatically (very old Windows 10 without the
 "winget" installer), the black window explains how to install it by hand.
 
 **Updating:** download the ZIP again, unzip it, and double-click
-**`Start Signal Identifier`** in it. The new version replaces the old one in
+**`Start IC7300 Rig Interface`** in it. The new version replaces the old one in
 `C:\SignalIdentifier` (settings and recordings are kept), starts, and the
 download is deleted again.
 
 ## Using it
 
-1. Pick your radio's sound input from the **Sound input** list. For radios with
-   a built-in USB sound card (IC-7300, FT-991A, etc.) it's usually called
+Everything you set up once is in the **Settings** menu at the top left of the
+window: sound input, listening on/off, identifying on/off, the radio
+connection, click-to-tune, the band scope options, and UTC or local time.
+Each choice is remembered, and listening and the radio connection start again
+by themselves next time.
+
+1. In **Settings > Sound input**, pick your radio's sound input. For radios
+   with a built-in USB sound card (IC-7300, FT-991A, etc.) it's usually called
    **"USB Audio CODEC"**. If one entry doesn't work, try the same name with
    **[MME]** after it.
-2. Press **Start listening**. Tune your radio to USB (upper sideband) for
-   digital modes, as you would for WSJT-X or fldigi.
+2. Choose **Settings > Start listening**. Tune your radio to USB (upper
+   sideband) for digital modes, as you would for WSJT-X or fldigi.
 3. Watch the **Audio level** bar. It should say **OK**. If it says "Too loud"
    or "Very quiet", adjust the audio level on the radio or in Windows sound
    settings.
 
-Untick **Identify signals** (top row) to hide the mode labels and just watch the
-waterfall; tick it again to bring them back. The choice is remembered.
+Untick **Settings > Identify signals** to hide the mode labels and just watch
+the waterfall; tick it again to bring them back.
+
+**Settings > UTC time / Local time** chooses what the clock above the
+frequency shows. Local time comes from the computer's own clock.
 
 Results update every second, based on the last 15 seconds of audio. FT8 is
 easiest to recognise after a full 15-second cycle.
@@ -59,7 +68,7 @@ easiest to recognise after a full 15-second cycle.
 The program can read the dial frequency, mode and S-meter from your radio.
 With that you get:
 
-- UTC time, frequency (laid out like the IC-7300's, **14.074.00**) and mode
+- the time (UTC or local), frequency (laid out like the IC-7300's, **14.074.00**) and mode
   in the top right corner
 - an **S-meter** bar next to the audio level
 - **Power, SWR and ALC** meters while you transmit (Icom radios and Hamlib
@@ -79,19 +88,21 @@ also switches the band scope on, so it can show the whole band (see
 1. Connect the radio to the computer with the USB cable and turn the radio on.
    (If Windows doesn't recognise it, install the **Icom USB driver** from
    Icom's website.)
-2. In the **Radio** list choose **Icom IC-7300**.
-3. In **Port**, pick the entry that says **Silicon Labs CP210x … (COMx)**
-   (it's usually picked for you). Press **↻** if the list is empty.
-4. Leave **Speed** at **115200**. On the radio, go to **MENU → SET →
+2. In **Settings > Radio** choose **Icom IC-7300**.
+3. In **Settings > Port**, pick the entry that says **Silicon Labs CP210x …
+   (COMx)** (it's usually picked for you). If the list is empty, choose
+   **Refresh the list** at its bottom.
+4. Leave **Settings > Speed** at **115200**. On the radio, go to **MENU → SET →
    Connectors → CI-V** and set:
    - **CI-V USB Baud Rate**: **115200**
    - **CI-V USB Port**: **Unlink from [REMOTE]** (needed for the whole-band view)
-5. Press **Connect radio**. The frequency and mode appear above the results.
+5. Choose **Settings > Connect radio**. The frequency and mode appear in the
+   top right.
    Next time it reconnects automatically.
 
 Also supported: other Icoms (IC-705, IC-7610, IC-9700, IC-7100, …), Yaesu
 (FT-991A, FT-891, FT-710, FTDX10/101, FT-817/818/857/897), Kenwood and
-Elecraft. Set **Speed** to match the CAT rate set in your radio's menu.
+Elecraft. Set **Settings > Speed** to match the CAT rate set in your radio's menu.
 
 ### Whole-band view (Icom radios)
 
@@ -107,8 +118,8 @@ identifies.
   so this is the reliable way to get a signal into view.)
 - **Click** in the detailed waterfall and the radio goes to exactly the
   frequency shown under the pointer.
-- Turn off "Click to tune radio" if you don't want clicks to tune.
-- **Show whole band** switches the radio's scope to centre mode, ±500 kHz,
+- Untick **Settings > Click to tune radio** if you don't want clicks to tune.
+- **Settings > Show whole band** switches the radio's scope to centre mode, ±500 kHz,
   which covers any band up to 500 kHz wide. Or set the scope to Fixed mode
   with the band edges on the radio itself; the program shows whatever the
   scope shows.
@@ -118,7 +129,7 @@ identifies.
 - **NO SIGNAL** appears in the middle of the band view when the radio isn't
   sending scope data, for example when its scope is switched off or a menu is
   open on the radio's screen.
-- **Keep scope on** (ticked by default): if the scope data stops, the program
+- **Settings > Keep scope on** (ticked by default): if the scope data stops, the program
   asks the radio to switch its scope back on every 5 seconds, so the band view
   keeps working even if the scope was turned off on the radio. Untick it if
   you want to switch the radio's scope off yourself and leave it off. While a
@@ -209,8 +220,9 @@ With the radio connected:
   if you're in a data mode (USB-D), the CW segment if you're in CW, or the
   phone segment if you're in SSB (LSB below 10 MHz, USB above). Pressing the
   band you're already on jumps back to that default spot.
-- **Mode buttons** (LSB, USB, LSB-D, USB-D, CW, RTTY, AM, FM), next to the
-  frequency display, change mode. The current band and mode are highlighted.
+- **Mode buttons** (LSB, USB, CW, RTTY, AM, FM), next to the frequency
+  display, change mode. The current band and mode are highlighted (USB also
+  lights up when the radio is in USB-D, LSB in LSB-D).
 
 ## SSTV pictures
 
@@ -239,7 +251,7 @@ sees ARDOP's 4 tones 50 Hz apart. It can't yet tell VARA from PACTOR, and a
 - The program lives in **`C:\SignalIdentifier`**: don't delete that folder
   (the Desktop icon points into it). Recordings are saved in its
   `recordings` folder. To install somewhere else, change the `INSTALL_DIR`
-  line near the top of `Start Signal Identifier.bat`.
+  line near the top of `Start IC7300 Rig Interface.bat`.
 - To remove the program completely, delete `C:\SignalIdentifier` and the
   Desktop icon.
 - This **identifies** the mode; it doesn't decode the text. To read the

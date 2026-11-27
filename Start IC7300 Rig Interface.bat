@@ -1,16 +1,18 @@
 @echo off
 rem ===========================================================================
-rem  Signal Identifier: double-click to install (or update) and start it.
+rem  IC7300 Rig Interface: double-click to install (or update) and start it.
 rem
 rem  * Installs the program in INSTALL_DIR (below) and starts it from there.
-rem  * Puts a "Signal Identifier" icon on the Desktop that starts it with no
+rem  * Puts an "IC7300 Rig Interface" icon on the Desktop that starts it with no
 rem    black window.
 rem  * Installs Python first if the computer doesn't have it.
 rem  * Afterwards deletes the downloaded copy (this folder and its ZIP), so
 rem    nothing is left lying around.
 rem ===========================================================================
-title Signal Identifier
+title IC7300 Rig Interface
 set "INSTALL_DIR=C:\SignalIdentifier"
+rem This file's own name (inside a "call :label" section %0 means the label instead).
+set "ME=%~nx0"
 cd /d "%~dp0"
 
 rem Opened straight from inside the ZIP (not unzipped)? Then only this one file
@@ -20,12 +22,15 @@ if not exist "signal_identifier\__main__.py" goto notextracted
 rem ---- 1. copy the program into INSTALL_DIR (unless we're already there) ----
 set "CLEANUP="
 if /i not "%CD%"=="%INSTALL_DIR%" (
-    echo Installing Signal Identifier in %INSTALL_DIR% ...
+    echo Installing IC7300 Rig Interface in %INSTALL_DIR% ...
     robocopy "%CD%" "%INSTALL_DIR%" /E /XD .venv .git __pycache__ .pytest_cache /XF signal_identifier_error.log /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul
     if errorlevel 8 goto copyfailed
     set "CLEANUP=%CD%"
     cd /d "%INSTALL_DIR%"
 )
+
+rem The launcher used to have another name: remove the old copy.
+if exist "Start Signal Identifier.bat" del "Start Signal Identifier.bat"
 
 rem ---- 2. find Python (or install it) -----------------------------------------
 set "PY="
@@ -55,7 +60,7 @@ if errorlevel 1 (
 
 rem ---- 4. Desktop icon (made again if the install folder changed) -----------
 set "MADE_FOR="
-if exist ".venv\desktop-icon-made" set /p MADE_FOR=<".venv\desktop-icon-made"
+if exist ".venv\desktop-icon-v2" set /p MADE_FOR=<".venv\desktop-icon-v2"
 if /i not "%MADE_FOR%"=="%CD%" call :makeicon
 
 rem ---- 5. start the program (no console window), tidy up, close ------------
@@ -85,8 +90,8 @@ call :findpython
 exit /b 0
 
 :makeicon
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$here=(Get-Location).Path; $lnk=Join-Path ([Environment]::GetFolderPath('Desktop')) 'Signal Identifier.lnk'; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($lnk); $s.TargetPath=Join-Path $here '.venv\Scripts\pythonw.exe'; $s.Arguments='-m signal_identifier'; $s.WorkingDirectory=$here; $s.IconLocation=(Join-Path $here 'signal_identifier\icon.ico')+',0'; $s.Description='Signal Identifier'; $s.Save()" >nul 2>nul
-if not errorlevel 1 >".venv\desktop-icon-made" echo %CD%
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$here=(Get-Location).Path; $desk=[Environment]::GetFolderPath('Desktop'); Remove-Item -LiteralPath (Join-Path $desk 'Signal Identifier.lnk') -ErrorAction SilentlyContinue; $lnk=Join-Path $desk 'IC7300 Rig Interface.lnk'; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($lnk); $s.TargetPath=Join-Path $here '.venv\Scripts\pythonw.exe'; $s.Arguments='-m signal_identifier'; $s.WorkingDirectory=$here; $s.IconLocation=(Join-Path $here 'signal_identifier\icon.ico')+',0'; $s.Description='IC7300 Rig Interface'; $s.Save()" >nul 2>nul
+if not errorlevel 1 >".venv\desktop-icon-v2" echo %CD%
 exit /b 0
 
 :cleanup
@@ -100,7 +105,7 @@ if /i "%SRC%"=="%USERPROFILE%\Desktop" exit /b 0
 if /i "%SRC%"=="%USERPROFILE%\Downloads" exit /b 0
 if /i "%SRC%"=="%INSTALL_DIR%" exit /b 0
 if not exist "%SRC%\signal_identifier\__main__.py" exit /b 0
-if not exist "%SRC%\Start Signal Identifier.bat" exit /b 0
+if not exist "%SRC%\%ME%" exit /b 0
 for %%I in ("%SRC%\..") do set "PARENT=%%~fI"
 for %%I in ("%PARENT%") do set "PNAME=%%~nxI"
 set "CB=%TEMP%\signal_identifier_cleanup.bat"
@@ -121,7 +126,7 @@ echo.
 echo   1. Close this window.
 echo   2. Find the downloaded file "Signal_Identifier-main" (usually in Downloads).
 echo   3. Right-click it and choose "Extract All...", then click "Extract".
-echo   4. In the folder that opens, double-click "Start Signal Identifier".
+echo   4. In the folder that opens, double-click "Start IC7300 Rig Interface".
 echo.
 pause
 exit /b 1
@@ -129,7 +134,7 @@ exit /b 1
 :copyfailed
 echo.
 echo  Couldn't copy the program to %INSTALL_DIR%.
-echo  If Signal Identifier is running, close it and double-click this file again.
+echo  If IC7300 Rig Interface is running, close it and double-click this file again.
 echo.
 pause
 exit /b 1

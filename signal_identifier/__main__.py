@@ -87,10 +87,10 @@ def _report_startup_error() -> None:
         from tkinter import messagebox
         root = tk.Tk()
         root.withdraw()
-        msg = "Signal Identifier couldn't start.\n\n" + details.strip().splitlines()[-1]
+        msg = "IC7300 Rig Interface couldn't start.\n\n" + details.strip().splitlines()[-1]
         if log:
             msg += f"\n\nThe full details are saved in:\n{log}\nPlease send that file to whoever helped you set this up."
-        messagebox.showerror("Signal Identifier", msg)
+        messagebox.showerror("IC7300 Rig Interface", msg)
         root.destroy()
     except Exception:
         pass
