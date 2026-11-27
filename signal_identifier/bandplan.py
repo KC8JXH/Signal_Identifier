@@ -87,21 +87,26 @@ def band_button_for(hz: float | None) -> str | None:
     return b[2].replace(" m", "") if b else None
 
 
-def band_target(button: str, current_mode: str, memory: dict | None = None) -> tuple[float, str]:
-    """Where a band button should take the radio: (frequency, mode).
+def default_mode(hz: float) -> str:
+    """The mode a band starts in: USB from 30 m up to 6 m, LSB below 30 m,
+    AM below 1.7 MHz (broadcast band). 60 m is USB: there voice is USB-only
+    (US channels), whatever the "below 30 m" rule would say."""
+    if hz < 1_700_000:
+        return "AM"
+    if 5_250_000 <= hz <= 5_450_000:
+        return "USB"
+    return "USB" if hz >= 10_000_000 else "LSB"
 
-    Returns to where you last were on that band if remembered; otherwise picks
-    a spot matching the kind of mode you're using now (CW, digital or phone).
-    """
+
+def band_target(button: str, current_mode: str = "", memory: dict | None = None) -> tuple[float, str]:
+    """Where a band button takes the radio: (frequency, mode).
+
+    The frequency is where you last were on that band (if remembered),
+    otherwise the band's phone spot (30 m, which has no phone: its FT8 spot).
+    The mode is always the band's default (see default_mode)."""
     if memory and button in memory:
-        f, m = memory[button]
-        return float(f), m
-    cw, digi, phone = BAND_BUTTONS[button]
-    m = (current_mode or "").upper()
-    if m.startswith("CW"):
-        return float(cw), "CW"
-    if m.endswith("-D") or m.startswith(("DATA", "PKT", "DIG")) or phone is None:
-        return float(digi), "USB-D"
-    if button == "60":
-        return float(phone), "USB"
-    return float(phone), ("LSB" if phone < 10_000_000 else "USB")
+        f = float(memory[button][0])
+    else:
+        cw, digi, phone = BAND_BUTTONS[button]
+        f = float(phone if phone is not None else digi)
+    return f, default_mode(f)

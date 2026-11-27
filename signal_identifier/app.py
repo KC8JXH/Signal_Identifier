@@ -13,11 +13,11 @@ import numpy as np
 
 from . import radio as R
 from .classify import analyze
-from .bandplan import BAND_BUTTONS, band_button_for, band_target
+from .bandplan import BAND_BUTTONS, band_button_for, band_target, default_mode
 from .recorder import Recorder, elapsed_text
 from .widgets import BandScope, MeterBar, meter_fraction, swr_fraction
 
-MODE_BUTTONS = ["LSB", "USB", "CW", "RTTY", "AM", "FM"]
+MODE_BUTTONS = ["LSB", "USB", "CW", "RTTY", "AM", "FM", "DATA"]
 APP_NAME = "IC7300 Rig Interface"
 BTN_BG, BTN_ON = "#e9ecef", "#39c5ff"
 
@@ -356,7 +356,7 @@ class App:
         # Tune: runs the radio's antenna tuner, like holding its TUNER button.
         self.tune_btn = tk.Button(modes, text="TUNE", width=13, relief="raised", bg=BTN_BG, fg="#c92a2a",
                                   font=("Segoe UI", 8, "bold"), padx=0, pady=1, command=self._tune_click)
-        self.tune_btn.grid(row=len(MODE_BUTTONS) // 2, column=0, columnspan=2, pady=(5, 1))
+        self.tune_btn.grid(row=(len(MODE_BUTTONS) + 1) // 2, column=0, columnspan=2, pady=(5, 1))
         self._tune_seen = ""          # last tune result already reported
         self._tune_shown_at = 0.0
 
@@ -576,7 +576,14 @@ class App:
             self.freq_entry.select_range(0, "end")
             return
         self._freq_edit_close()
+        st = self.radio.get() if self.radio is not None else None
         self._tune_to(hz)
+        # typed a frequency on another band (or the AM broadcast band): use its default mode
+        if st is not None and st.ok and st.freq_hz and self.radio is not None:
+            new_band, old_band = band_button_for(hz), band_button_for(st.freq_hz)
+            mode = default_mode(hz)
+            if (new_band != old_band or (hz < 1_700_000) != (st.freq_hz < 1_700_000)) and mode != st.mode:
+                self.radio.set_mode(mode)
 
     def _tune_to(self, hz: float):
         if self._radio_ready() is None:
@@ -774,7 +781,9 @@ class App:
             on = cur_mode == m or (m == "RTTY" and cur_mode in ("RTTY", "RTTY-L", "FSK")) \
                 or (m == "USB" and cur_mode in ("USB-D", "DATA-U", "PKTUSB", "DIG")) \
                 or (m == "LSB" and cur_mode in ("LSB-D", "DATA-L", "PKTLSB")) \
-                or (m == "CW" and cur_mode in ("CW-U", "CW-R", "CW-L"))
+                or (m == "CW" and cur_mode in ("CW-U", "CW-R", "CW-L")) \
+                or (m == "DATA" and (cur_mode.endswith("-D") or cur_mode in ("DATA-U", "DATA-L", "PKTUSB",
+                                                                             "PKTLSB", "DIG")))
             b.config(bg=BTN_ON if on else BTN_BG)
         cur_band = band_button_for(st.freq_hz) if st else None
         for n, b in self.band_btns.items():
@@ -826,6 +835,17 @@ class App:
         if self.radio is None:
             self.status.config(text="Connect the radio first to change mode.")
             return
+        if mode == "DATA":
+            # like the radio's DATA key: data mode on/off for the sideband you're on
+            st = self.radio.get()
+            cur = (st.mode or "").upper()
+            if cur.endswith("-D"):
+                mode = cur[:-2]
+            elif cur in ("USB", "LSB"):
+                mode = cur + "-D"
+            else:
+                self.status.config(text="DATA works in USB or LSB.")
+                return
         self.radio.set_mode(mode)
         self.status.config(text=f"Switching the radio to {mode}")
 
@@ -845,9 +865,8 @@ class App:
             memory.pop(name, None)                  # pressing the current band again: go to its default spot
         freq, mode = band_target(name, st.mode, memory)
         save_settings(self.settings)
-        if mode != st.mode:
-            self.radio.set_mode(mode)
         self.radio.tune(freq)
+        self.radio.set_mode(mode)            # every band starts in its default mode
         self.status.config(text=f"Going to {name} m: {R.format_freq(freq)} {mode}")
 
     def _set_meter(self, db, note: str):

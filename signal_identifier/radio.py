@@ -872,6 +872,7 @@ class RadioPoller:
         self.lock = threading.Lock()
         self._tune_to = None
         self._mode_to = None
+        self._mode_check = None    # (mode, time, retries left): make sure the radio kept it
         self._scope_cmd = None
         self.scope_message = ""
         self.has_scope = hasattr(protocol, "latest_scope")
@@ -928,6 +929,7 @@ class RadioPoller:
                         with self.lock:
                             self.state = replace(self.state, freq_hz=freq, mode=mode, ok=True,
                                                  message="", cw_pitch=pitch)
+                        self._recheck_mode(mode)
                     else:
                         fails += 1
                         self._fail("Radio isn't answering. Check the port, speed (baud) and radio model.", fails)
@@ -963,6 +965,24 @@ class RadioPoller:
             busy = (meter_ok or tx_ok) and self.state.ok
             time.sleep(self.meter_interval if busy else min(self.interval, 0.5))
 
+    def _recheck_mode(self, actual: str):
+        """Shortly after a mode change, if the radio switched to something else
+        (e.g. a band's remembered mode), send ours once more."""
+        chk = self._mode_check
+        if not chk:
+            return
+        want, since, left = chk
+        if actual == want or time.monotonic() - since > 4:
+            self._mode_check = None
+        elif time.monotonic() - since > 0.4 and left > 0:
+            self._mode_check = (want, time.monotonic(), left - 1)
+            try:
+                if self.protocol.set_mode(want):
+                    with self.lock:
+                        self.state.mode = want
+            except Exception:
+                pass
+
     def _fail(self, msg: str, fails: int):
         with self.lock:
             if fails >= 2 or not self.state.ok:
@@ -973,18 +993,22 @@ class RadioPoller:
             hz, self._tune_to = self._tune_to, None
             md, self._mode_to = self._mode_to, None
             sc, self._scope_cmd = self._scope_cmd, None
-        if md and hasattr(self.protocol, "set_mode"):
-            try:
-                if self.protocol.set_mode(md):
-                    with self.lock:
-                        self.state.mode = md
-            except Exception:
-                pass
+        # Frequency first, then mode: landing on another band makes the radio
+        # recall that band's last mode (band stacking), which would otherwise
+        # overwrite the mode we just set.
         if hz and hasattr(self.protocol, "set_freq"):
             try:
                 if self.protocol.set_freq(hz):
                     with self.lock:
                         self.state.freq_hz = hz
+            except Exception:
+                pass
+        if md and hasattr(self.protocol, "set_mode"):
+            try:
+                if self.protocol.set_mode(md):
+                    with self.lock:
+                        self.state.mode = md
+                    self._mode_check = (md, time.monotonic(), 1)
             except Exception:
                 pass
         if sc == "whole":

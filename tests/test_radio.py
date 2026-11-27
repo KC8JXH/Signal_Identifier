@@ -331,15 +331,75 @@ def test_set_mode_and_freq_commands():
 
 
 def test_band_buttons():
-    from signal_identifier.bandplan import band_button_for, band_target
-    assert band_target("20", "USB-D") == (14_074_000, "USB-D")
+    from signal_identifier.bandplan import band_button_for, band_target, default_mode
+    # every band starts in its default mode, whatever mode you were in
+    assert band_target("20", "USB-D") == (14_250_000, "USB")
     assert band_target("40", "USB") == (7_200_000, "LSB")
-    assert band_target("20", "LSB") == (14_250_000, "USB")
-    assert band_target("30", "LSB") == (10_136_000, "USB-D")   # no phone on 30 m
-    assert band_target("40", "CW") == (7_030_000, "CW")
-    assert band_target("40", "CW", {"40": (7_012_500, "CW")}) == (7_012_500, "CW")
+    assert band_target("80", "CW") == (3_850_000, "LSB")
+    assert band_target("160", "USB") == (1_900_000, "LSB")
+    assert band_target("30", "LSB") == (10_136_000, "USB")      # no phone on 30 m
+    assert band_target("6", "LSB") == (50_125_000, "USB")
+    assert band_target("60", "LSB")[1] == "USB"                 # 60 m voice is USB-only
+    # remembered frequency is kept, mode still resets
+    assert band_target("40", "CW", {"40": (7_012_500, "CW")}) == (7_012_500, "LSB")
+    assert default_mode(1_000_000) == "AM" and default_mode(1_699_000) == "AM"
+    assert default_mode(1_850_000) == "LSB" and default_mode(10_120_000) == "USB"
     assert band_button_for(14_074_000) == "20" and band_button_for(9_000_000) is None
 
+
+def test_band_change_sets_frequency_before_mode():
+    """The radio recalls a band's last mode when it lands there, so the
+    frequency must go first and the mode after it."""
+    import time
+    fs = FakeSerial(ic7300())
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    try:
+        for _ in range(40):
+            if p.get().ok:
+                break
+            time.sleep(0.05)
+        p.tune(7_200_000)
+        p.set_mode("LSB")
+        time.sleep(0.4)
+        sent = [w[4] for w in fs.written if len(w) > 5 and w[4] in (0x05, 0x06)]
+        assert 0x05 in sent and 0x06 in sent and sent.index(0x05) < sent.index(0x06)
+    finally:
+        p.stop()
+
+
+def test_poller_resends_mode_if_radio_changes_it():
+    """Radio switches to another mode after ours (band stacking): send ours again."""
+    import time
+    state = {"mode": 0x01}                      # radio says USB...
+
+    base = ic7300()
+
+    def respond(cmd):
+        if cmd[4] == 0x06:                      # set mode: radio accepts, then "recalls" USB
+            state["sets"] = state.get("sets", 0) + 1
+            if state["sets"] >= 2:
+                state["mode"] = cmd[5]          # second try sticks
+            return cmd + b"\xfe\xfe\xe0\x94\xfb\xfd"
+        if cmd[4] == 0x04:
+            return cmd + b"\xfe\xfe\xe0\x94\x04" + bytes([state["mode"], 1]) + b"\xfd"
+        return base(cmd)
+    fs = FakeSerial(respond)
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.1, meter_interval=0.02)
+    try:
+        for _ in range(40):
+            if p.get().ok:
+                break
+            time.sleep(0.05)
+        p.set_mode("LSB")
+        for _ in range(60):
+            if state.get("sets", 0) >= 2 and p.get().mode.startswith("LSB"):
+                break
+            time.sleep(0.05)
+        assert state.get("sets", 0) >= 2 and p.get().mode.startswith("LSB")
+    finally:
+        p.stop()
 
 def test_recorder(tmp_path):
     import numpy as np

@@ -209,14 +209,18 @@ With the radio connected:
 
 With the radio connected:
 
-- **Band buttons** (160 … 6) above the scope change band. Each band
-  remembers where you last were. The first time, it goes to the FT8 frequency
-  if you're in a data mode (USB-D), the CW segment if you're in CW, or the
-  phone segment if you're in SSB (LSB below 10 MHz, USB above). Pressing the
-  band you're already on jumps back to that default spot.
+- **Band buttons** (160 … 6) above the scope change band. Each band remembers
+  the frequency you were last on (the first time, its phone spot; on 30 m, the
+  FT8 spot). Pressing the band you're already on jumps back to that spot.
+- **Every band starts in its default mode**: USB from 30 m up to 6 m, LSB below
+  30 m, except 60 m, which is USB (voice there is USB-only). Typing a frequency
+  below 1.7 MHz (the AM broadcast band) switches to AM. Once you're on a band,
+  change the mode on the radio or with the buttons: the buttons always show
+  what the radio is actually on. Switching band goes back to the default.
 - **Mode buttons** (LSB, USB, CW, RTTY, AM, FM), next to the frequency
-  display, change mode. The current band and mode are highlighted (USB also
-  lights up when the radio is in USB-D, LSB in LSB-D).
+  display, change mode. **DATA** turns data mode on or off for the sideband
+  you're on (USB ↔ USB-D, LSB ↔ LSB-D), like the radio's DATA key. The
+  current band and mode light up (USB and DATA together in USB-D).
 
 ## SSTV pictures
 
