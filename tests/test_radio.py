@@ -347,6 +347,23 @@ def test_band_buttons():
     assert band_button_for(14_074_000) == "20" and band_button_for(9_000_000) is None
 
 
+def test_mode_after_move():
+    from signal_identifier.bandplan import mode_after_move
+    # 160 m in LSB, click / type / step below 1.7 MHz -> AM
+    assert mode_after_move(1_850_000, 1_650_000, "LSB") == "AM"
+    assert mode_after_move(1_850_000, 1_700_000, "LSB") is None      # 1.700 itself is not below 1.7
+    assert mode_after_move(1_701_000, 1_699_000, "LSB") == "AM"      # stepping down across 1.7 MHz
+    # back up out of the broadcast band
+    assert mode_after_move(1_000_000, 1_850_000, "AM") == "LSB"
+    # within a band the mode you chose stays
+    assert mode_after_move(14_074_000, 14_230_000, "USB-D") is None
+    assert mode_after_move(7_074_000, 7_200_000, "USB") is None
+    # onto another band: that band's default
+    assert mode_after_move(7_200_000, 14_250_000, "LSB") == "USB"
+    assert mode_after_move(14_250_000, 7_200_000, "USB") == "LSB"
+    assert mode_after_move(None, 7_200_000, "USB") is None
+
+
 def test_band_change_sets_frequency_before_mode():
     """The radio recalls a band's last mode when it lands there, so the
     frequency must go first and the mode after it."""

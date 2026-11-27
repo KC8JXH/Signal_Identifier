@@ -98,6 +98,20 @@ def default_mode(hz: float) -> str:
     return "USB" if hz >= 10_000_000 else "LSB"
 
 
+def mode_after_move(old_hz: float | None, new_hz: float, current_mode: str) -> str | None:
+    """Moving the frequency (typing, clicking the scope, the arrows): if the
+    move lands on another band - or into / out of the AM broadcast band below
+    1.7 MHz - return that band's default mode, else None (keep the mode)."""
+    if not old_hz:
+        return None
+    crossed = (band_button_for(new_hz) != band_button_for(old_hz)
+               or (new_hz < 1_700_000) != (old_hz < 1_700_000))
+    if not crossed:
+        return None
+    m = default_mode(new_hz)
+    return m if m != (current_mode or "").upper() else None
+
+
 def band_target(button: str, current_mode: str = "", memory: dict | None = None) -> tuple[float, str]:
     """Where a band button takes the radio: (frequency, mode).
 

@@ -213,8 +213,10 @@ With the radio connected:
   the frequency you were last on (the first time, its phone spot; on 30 m, the
   FT8 spot). Pressing the band you're already on jumps back to that spot.
 - **Every band starts in its default mode**: USB from 30 m up to 6 m, LSB below
-  30 m, except 60 m, which is USB (voice there is USB-only). Typing a frequency
-  below 1.7 MHz (the AM broadcast band) switches to AM. Once you're on a band,
+  30 m, except 60 m, which is USB (voice there is USB-only). Going below
+  1.7 MHz (the AM broadcast band) switches to AM, whether you type the
+  frequency, click the scope or step with the arrows; moving onto another band
+  that way also switches to that band's default. Once you're on a band,
   change the mode on the radio or with the buttons: the buttons always show
   what the radio is actually on. Switching band goes back to the default.
 - **Mode buttons** (LSB, USB, CW, RTTY, AM, FM), next to the frequency

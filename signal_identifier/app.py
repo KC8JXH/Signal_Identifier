@@ -13,7 +13,7 @@ import numpy as np
 
 from . import radio as R
 from .classify import analyze
-from .bandplan import BAND_BUTTONS, band_button_for, band_target, default_mode
+from .bandplan import BAND_BUTTONS, band_button_for, band_target, mode_after_move
 from .recorder import Recorder, elapsed_text
 from .widgets import BandScope, MeterBar, meter_fraction, swr_fraction
 
@@ -578,12 +578,8 @@ class App:
         self._freq_edit_close()
         st = self.radio.get() if self.radio is not None else None
         self._tune_to(hz)
-        # typed a frequency on another band (or the AM broadcast band): use its default mode
-        if st is not None and st.ok and st.freq_hz and self.radio is not None:
-            new_band, old_band = band_button_for(hz), band_button_for(st.freq_hz)
-            mode = default_mode(hz)
-            if (new_band != old_band or (hz < 1_700_000) != (st.freq_hz < 1_700_000)) and mode != st.mode:
-                self.radio.set_mode(mode)
+        if st is not None and st.ok:
+            self._band_default(st.freq_hz, hz, st.mode)
 
     def _tune_to(self, hz: float):
         if self._radio_ready() is None:
@@ -600,7 +596,15 @@ class App:
         base = st.freq_hz
         if self.tune_pending and time.monotonic() - self.tune_pending[1] < 1.5:
             base = self.tune_pending[0]       # keep stepping from where we asked to go
-        self._tune_to(R.step_freq(base, self.step, sign))
+        target = R.step_freq(base, self.step, sign)
+        self._tune_to(target)
+        self._band_default(base, target, st.mode)
+
+    def _band_default(self, old_hz, new_hz, mode):
+        """Moved onto another band (or the AM broadcast band): switch to its default mode."""
+        new_mode = mode_after_move(old_hz, new_hz, mode)
+        if new_mode and self.radio is not None:
+            self.radio.set_mode(new_mode)
 
     def _freq_wheel(self, e):
         self._freq_step(+1 if e.delta > 0 else -1)
@@ -626,7 +630,13 @@ class App:
         touching the IC-7300's screen (rounded to suit the span)."""
         st = self._radio_for_click()
         if st is not None:
-            self._tune(R.click_target(hz, st.mode, self.band.span_half()), st)
+            # another band (or the AM broadcast band)? then its default mode,
+            # and round the click to suit that mode (AM: whole kHz)
+            new_mode = mode_after_move(st.freq_hz, hz, st.mode)
+            target = R.click_target(hz, new_mode or st.mode, self.band.span_half())
+            self._tune(target, st)
+            if new_mode and target is not None:
+                self.radio.set_mode(new_mode)
 
     def _span_click(self, half: int):
         """A span tick box: set the radio's scope to Center mode with that span."""
