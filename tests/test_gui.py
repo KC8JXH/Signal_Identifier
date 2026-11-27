@@ -16,10 +16,18 @@ class FakeRadio:
     tune_status = ""
 
     def __init__(self, mode="USB"):
-        self.mode, self.sent, self.filters = mode, [], []
+        self.mode, self.sent, self.filters, self.spans, self.freqs = mode, [], [], [], []
+        self.freq = 14_074_000
 
     def get(self):
-        return R.RadioState(14_074_000, self.mode, True, "", -20.0, tx=False, filter=1)
+        return R.RadioState(self.freq, self.mode, True, "", -20.0, tx=False, filter=1)
+
+    def tune(self, hz):
+        self.freqs.append(hz)
+        self.freq = hz
+
+    def set_span(self, half):
+        self.spans.append(half)
 
     def set_mode(self, m, f=None):
         self.sent.append((m, f))
@@ -69,4 +77,34 @@ def test_filter_buttons_and_band_memory(app):
     assert app.radio.filters == [3]
     app.mode_btns["LSB"].invoke()                 # mode change keeps the band's filter
     assert app.radio.sent[-1] == ("LSB", 3)
+    assert app._errors == []
+
+
+
+def test_band_change_sets_scope_to_500k(app):
+    app.radio.has_scope = True
+    app.band_btns["40"].invoke()
+    assert app.radio.spans == [500_000] and app.span_var.get() == "500000"
+    assert app.radio.sent[-1][0] == "LSB"
+    app.radio.spans.clear()
+    app._band_click(7_150_000)                  # same band: span left alone
+    assert app.radio.spans == []
+
+
+def test_arrows_and_typing_only_widen_when_leaving_the_band(app):
+    app.radio.has_scope = True
+    app.radio.freq = 14_200_000
+    app.step = 5000
+    app.tune_pending = None
+    app._freq_step(+1)                          # inside 20 m: span left alone
+    app._freq_edit()
+    app.freq_entry.delete(0, "end")
+    app.freq_entry.insert(0, "14.250")
+    app._freq_typed(app.freq_entry.get())       # still inside 20 m
+    assert app.radio.spans == []
+    app._freq_edit()
+    app.freq_entry.delete(0, "end")
+    app.freq_entry.insert(0, "7.200")
+    app._freq_typed(app.freq_entry.get())       # out of 20 m, onto 40 m
+    assert app.radio.spans == [500_000]
     assert app._errors == []

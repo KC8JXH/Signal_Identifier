@@ -113,6 +113,9 @@ frequency you're on, and the shaded area is what you're hearing (the receive
 passband). The marker turns red while you transmit. Signals the program has
 identified are labelled at their frequency, just above the spectrum.
 
+- **On every band change the scope goes to ±500k**: with the band buttons, and
+  when typing a frequency, clicking or stepping takes you out of the band
+  you were on (moving around inside a band leaves the span as it is).
 - **Span tick boxes** (±2.5k, ±5k, ±10k, ±25k, ±50k, ±100k, ±250k, ±500k), next
   to the band buttons, set the radio's scope to Center mode with that span,
   just like its SPAN key. The box for the span the radio is showing is ticked,

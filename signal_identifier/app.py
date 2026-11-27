@@ -625,6 +625,8 @@ class App:
         new_mode = mode_after_move(old_hz, new_hz, mode)
         if self.radio is None:
             return
+        if old_hz and self._band_key(old_hz) != self._band_key(new_hz):
+            self._wide_span()                  # new band: scope at +/-500k
         if new_mode:
             self._set_mode(new_mode, new_hz)
         elif old_hz and self._band_key(old_hz) != self._band_key(new_hz):
@@ -661,11 +663,20 @@ class App:
             target = R.click_target(hz, new_mode or st.mode, self.band.span_half())
             self._tune(target, st)
             if target is not None:
+                if self._band_key(st.freq_hz) != self._band_key(target):
+                    self._wide_span()          # new band: scope at +/-500k
                 if new_mode:
                     self._set_mode(new_mode, target)
                 elif self._band_key(st.freq_hz) != self._band_key(target):
                     self._radio_cmd_at = time.monotonic()
                     self.radio.set_filter(self._filter_for(target))
+
+    def _wide_span(self):
+        """New band: show the radio's scope at +/-500k (Center mode)."""
+        if self.radio is not None and getattr(self.radio, "has_scope", False):
+            self.span_var.set(str(500_000))
+            self._span_pending = (500_000, time.monotonic())
+            self.radio.set_span(500_000)
 
     def _span_click(self, half: int):
         """A span tick box: set the radio's scope to Center mode with that span."""
@@ -973,6 +984,7 @@ class App:
         self._radio_cmd_at = time.monotonic()
         self.radio.tune(freq)
         self._set_mode(mode, freq)           # every band starts in its default mode, with its filter
+        self._wide_span()                    # and the scope at +/-500k
         self.status.config(text=f"Going to {name} m: {R.format_freq(freq)} {mode}")
 
     def _set_meter(self, db, note: str):
