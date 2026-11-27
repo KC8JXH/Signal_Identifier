@@ -265,6 +265,12 @@ class App:
                           padx=0, pady=0, command=lambda m=m: self._mode_click(m))
             b.grid(row=i % 4, column=i // 4, padx=1, pady=1)
             self.mode_btns[m] = b
+        # Tune: runs the radio's antenna tuner, like holding its TUNER button.
+        self.tune_btn = tk.Button(modes, text="TUNE", width=13, relief="raised", bg=BTN_BG, fg="#c92a2a",
+                                  font=("Segoe UI", 8, "bold"), padx=0, pady=1, command=self._tune_click)
+        self.tune_btn.grid(row=4, column=0, columnspan=2, pady=(5, 1))
+        self._tune_seen = ""          # last tune result already reported
+        self._tune_shown_at = 0.0
 
         controls = tk.Frame(header)
         controls.pack(side="left", fill="x", expand=True)
@@ -663,6 +669,7 @@ class App:
                     self.lcd_mode.config(text=f"{st.mode}  pitch {st.cw_pitch:.0f}")
                 self._set_meter(st.smeter_db, "" if st.smeter_db is not None else "not available")
                 self._set_tx_meters(st)
+                self._show_tune()
                 self._highlight(st)
                 self.wf.set_dial((st.freq_hz, st.mode, st.cw_pitch))
             else:
@@ -692,6 +699,48 @@ class App:
         cur_band = band_button_for(st.freq_hz) if st else None
         for n, b in self.band_btns.items():
             b.config(bg=BTN_ON if n == cur_band else BTN_BG)
+
+    TUNE_LOOK = {   # status -> (button text, background, text colour)
+        "starting": ("TUNING…", "#ffa94d", "#000000"),
+        "tuning": ("TUNING…", "#ffa94d", "#000000"),
+        "done": ("TUNED", "#51cf66", "#000000"),
+        "failed": ("NO MATCH", "#ff6b6b", "#ffffff"),
+        "refused": ("NO ANSWER", "#ff6b6b", "#ffffff"),
+        "unsupported": ("NOT AVAILABLE", "#ced4da", "#495057"),
+    }
+
+    def _tune_click(self):
+        st = self._radio_ready()
+        if st is None:
+            return
+        if self.radio.tune_status in ("starting", "tuning"):
+            return
+        if st.tx:
+            self.status.config(text="The radio is already transmitting. Wait until it's back on receive, then press Tune.")
+            return
+        self.radio.start_tune()
+        self._tune_seen = ""
+        self.status.config(text="Tuning: the radio sends a low-power carrier while its tuner finds a match…")
+        self._show_tune()
+
+    def _show_tune(self):
+        """Keep the Tune button and status line in step with the radio's tune."""
+        status = self.radio.tune_status if self.radio is not None else ""
+        if status in ("done", "failed", "refused", "unsupported") and status != self._tune_seen:
+            self._tune_seen = status
+            self._tune_shown_at = time.monotonic()
+            swr = self.radio.tune_swr
+            swr_txt = f" (SWR {swr:.1f})" if swr else ""
+            self.status.config(text={
+                "done": f"Tuned{swr_txt}. Ready to transmit.",
+                "failed": f"The tuner couldn't find a match{swr_txt}. Check the antenna and that you're on a ham band.",
+                "refused": "The radio didn't start tuning. Check that its internal tuner is available on this band.",
+                "unsupported": "Tune works with Icom radios (and through Hamlib rigctld).",
+            }[status])
+        if status in ("done", "failed", "refused", "unsupported") and time.monotonic() - self._tune_shown_at > 4:
+            status = ""   # result shown long enough: back to the normal button
+        text, bg, fg = self.TUNE_LOOK.get(status, ("TUNE", BTN_BG, "#c92a2a"))
+        self.tune_btn.config(text=text, bg=bg, fg=fg, activebackground=bg)
 
     def _mode_click(self, mode: str):
         if self.radio is None:

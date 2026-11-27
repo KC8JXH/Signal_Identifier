@@ -8,7 +8,10 @@ Supported connections:
   * flrig (lets WSJT-X, fldigi and this program share the radio)
   * Hamlib rigctld (same idea, used by many logging programs)
 
-Only *reads* are ever sent: this program never changes anything on the radio.
+Mostly reads. The only things ever changed on the radio are the frequency and
+mode (when you click or press a band/mode button), switching the band scope on,
+and starting the antenna tuner when you press Tune - the one time the radio
+transmits, under its own control, just like a long press of its TUNER button.
 """
 
 from __future__ import annotations
@@ -257,6 +260,10 @@ class SerialProtocol:
         """(power in W, SWR, ALC in % of zone) while transmitting."""
         return None, None, None
 
+    # Antenna tuner: start_tune() returns True if the radio accepted it;
+    # read_tuner() gives "tuning", "on" (tuned, tuner in line), "off" or None.
+    can_tune = False
+
 
 def _interp(x: float, pts) -> float:
     """Straight lines through (raw, value) calibration points."""
@@ -410,6 +417,17 @@ class IcomCIV(SerialProtocol):
     def read_tx(self):
         d = self._query(0x1C, 0x00, timeout=0.2)
         return bool(d[0]) if d else None
+
+    can_tune = True
+
+    def start_tune(self) -> bool:
+        """1C 01 02: start the internal antenna tuner, exactly like holding the
+        TUNER button. The radio keys up at low power, tunes and unkeys itself."""
+        return self._set(b"\x1c\x01\x02", timeout=1.0)
+
+    def read_tuner(self):
+        d = self._query(0x1C, 0x01, timeout=0.3)
+        return {0: "off", 1: "on", 2: "tuning"}.get(d[0]) if d else None
 
     def _meter(self, sub: int) -> int | None:
         d = self._query(0x15, sub, timeout=0.2)
@@ -741,6 +759,16 @@ class Rigctld:
         v = self._number("t")
         return None if v is None else v != 0
 
+    can_tune = True
+
+    def start_tune(self) -> bool:
+        r = self._query("G TUNE")              # Hamlib "tune" VFO operation
+        return bool(r) and r[-1] == "0"
+
+    def read_tuner(self):
+        tx = self.read_tx()                    # Hamlib has no tuner status: tuning while it transmits
+        return None if tx is None else ("tuning" if tx else "on")
+
     def read_tx_meters(self):
         alc = self._number("l ALC")             # Hamlib: 0.0-1.0
         return (self._number("l RFPOWER_METER_WATTS"), self._number("l SWR"),
@@ -810,6 +838,11 @@ class RadioPoller:
         # ask it to turn the scope back on every few seconds.
         self.keep_scope_on = True
         self.scope_kicks = 0
+        # Tune button: "" (idle), "starting", "tuning", "done", "failed", "refused", "unsupported"
+        self.tune_status = ""
+        self.tune_swr = None       # highest SWR seen at the end of the tune
+        self._tune_req = False
+        self._tune_since = 0.0
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -830,6 +863,7 @@ class RadioPoller:
         while self.running:
             now = time.monotonic()
             self._do_requests()
+            self._watch_tune(now)
             if (self.has_scope and self.keep_scope_on and self.state.ok and now - last_kick >= 5.0
                     and self.protocol.latest_scope(max_age=3.0) is None):
                 last_kick = now
@@ -918,6 +952,44 @@ class RadioPoller:
                     self.scope_message = "The radio didn't accept the scope span change."
             except Exception as e:
                 self.scope_message = f"Band scope problem: {e}"
+
+    TUNE_TIMEOUT = 20.0
+
+    def start_tune(self):
+        """Ask the radio to run its antenna tuner (done in the background)."""
+        with self.lock:
+            self._tune_req = True
+            self.tune_status = "starting"
+            self.tune_swr = None
+
+    def _watch_tune(self, now: float):
+        with self.lock:
+            req, self._tune_req = self._tune_req, False
+        if req:
+            if not getattr(self.protocol, "can_tune", False):
+                self.tune_status = "unsupported"
+                return
+            try:
+                ok = self.protocol.start_tune()
+            except Exception:
+                ok = False
+            self.tune_status = "tuning" if ok else "refused"
+            self._tune_since = now
+            return
+        if self.tune_status != "tuning" or now - self._tune_since < 0.8:
+            return                              # give the radio a moment to key up
+        try:
+            st = self.protocol.read_tuner()
+        except Exception:
+            st = None
+        if self.state.swr is not None:
+            self.tune_swr = self.state.swr
+        if st == "on":
+            self.tune_status = "done"
+        elif st == "off":
+            self.tune_status = "failed"         # the radio gave up (no match found)
+        elif now - self._tune_since > self.TUNE_TIMEOUT:
+            self.tune_status = "failed"
 
     def tune(self, hz: float):
         """Ask the radio to move to `hz` (done in the background)."""

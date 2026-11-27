@@ -47,7 +47,7 @@ class FakeSerial:
 
 
 def ic7300(freq=14074000, mode=0x01, data=1, echo=True, meter=120, pitch=128,
-           tx=None, po=0, swr=0, alc=0, addr=0x94):
+           tx=None, po=0, swr=0, alc=0, addr=0x94, tuner=None):
     def bcd_le(v):
         out = []
         for _ in range(5):
@@ -69,7 +69,13 @@ def ic7300(freq=14074000, mode=0x01, data=1, echo=True, meter=120, pitch=128,
             if c == 0x1C and cmd[5] == 0x00 and tx is not None:
                 return reply + head + b"\x1c\x00" + bytes([tx]) + b"\xfd"
             return reply
-        if c == 0x1C and cmd[5] == 0x00 and tx is not None and len(cmd) == 7:
+        if c == 0x1C and cmd[5] == 0x01 and tuner is not None:
+            if len(cmd) == 8:                       # 1C 01 02: start tuning
+                reply += head + b"\xfb\xfd"
+            else:                                   # status query: next state in the list
+                st = tuner.pop(0) if len(tuner) > 1 else tuner[0]
+                reply += head + b"\x1c\x01" + bytes([st]) + b"\xfd"
+        elif c == 0x1C and cmd[5] == 0x00 and tx is not None and len(cmd) == 7:
             reply += head + b"\x1c\x00" + bytes([tx]) + b"\xfd"
         elif c == 0x15 and cmd[5] in (0x11, 0x12, 0x13):
             reply += head + bytes([0x15, cmd[5]]) + bcd2({0x11: po, 0x12: swr, 0x13: alc}[cmd[5]]) + b"\xfd"
@@ -504,3 +510,82 @@ def test_parse_freq_rejects(text):
 ])
 def test_step_freq(hz, step, d, want):
     assert R.step_freq(hz, step, d) == want
+
+
+
+# ------------------------------------------------------------------ Tune button
+
+def test_icom_start_tune_sends_tuner_command():
+    fs = FakeSerial(ic7300(tuner=[2]))
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    assert proto.start_tune() is True
+    assert b"\xfe\xfe\x94\xe0\x1c\x01\x02\xfd" in fs.written
+    assert proto.read_tuner() == "tuning"
+
+
+def test_nothing_transmits_until_tune_is_pressed():
+    import time
+    fs = FakeSerial(ic7300(tx=0, tuner=[1]))
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    try:
+        time.sleep(1.0)
+        assert not any(w[4:7] == b"\x1c\x01\x02" for w in fs.written if len(w) > 6)
+    finally:
+        p.stop()
+
+
+@pytest.mark.parametrize("states,expect", [([2, 2, 2, 1], "done"), ([2, 2, 0], "failed")])
+def test_poller_follows_the_tune(states, expect):
+    import time
+    fs = FakeSerial(ic7300(tx=0, tuner=list(states)))
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    try:
+        for _ in range(40):
+            if p.get().ok:
+                break
+            time.sleep(0.05)
+        p.start_tune()
+        assert p.tune_status == "starting"
+        for _ in range(80):
+            if p.tune_status in ("done", "failed"):
+                break
+            time.sleep(0.05)
+        assert p.tune_status == expect
+    finally:
+        p.stop()
+
+
+def test_tune_on_a_radio_without_tuner_control():
+    import time
+    fs = FakeSerial(kenwood_like := (lambda cmd: b""))
+    proto = R.Kenwood(fs)
+    p = R.RadioPoller(proto, None, interval=0.05)
+    try:
+        p.start_tune()
+        for _ in range(40):
+            if p.tune_status not in ("starting",):
+                break
+            time.sleep(0.05)
+        assert p.tune_status == "unsupported"
+    finally:
+        p.stop()
+
+
+def test_rigctld_tune():
+    answers = {b"G TUNE": b"RPRT 0\n", b"t": b"1\n"}
+
+    class H(socketserver.StreamRequestHandler):
+        def handle(self):
+            self.wfile.write(answers.get(self.rfile.readline().strip(), b"RPRT -11\n"))
+
+    srv = socketserver.TCPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        proto, _ = R.make_protocol("Hamlib rigctld", net_port=srv.server_address[1])
+        assert proto.start_tune() is True
+        assert proto.read_tuner() == "tuning"
+    finally:
+        srv.shutdown()
+        srv.server_close()

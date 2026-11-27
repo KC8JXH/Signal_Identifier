@@ -67,7 +67,8 @@ With that you get:
 - the waterfall scale labelled in radio frequencies
 - on Icom radios, a **whole-band view** from the radio's own band scope (see below)
 
-It never transmits, and never keys the radio. The only things it ever changes
+It only transmits when you press **Tune** (see below), and then the radio
+itself runs its tune just as if you'd held its TUNER button. The only things it ever changes
 on the radio are the frequency and mode, and only when you click a signal (with
 "Click to tune radio" ticked) or press a band or mode button. On Icom radios it
 also switches the band scope on, so it can show the whole band (see
@@ -166,6 +167,22 @@ way to improve it. To share one, open this project on GitHub, click
 **Add file → Upload files**, drag the WAV file in and click **Commit changes**.
 
 You can also analyse a saved file: `python -m signal_identifier recordings\yourfile.wav`
+
+## Tune button
+
+**TUNE** (under the mode buttons) runs the radio's automatic antenna tuner,
+exactly like holding the **TUNER** button on the radio: the radio sends a
+low-power carrier, the tuner finds a match, and the radio goes back to receive
+by itself. The button shows **TUNING…** while that happens, then **TUNED** or
+**NO MATCH**, and the status line gives the SWR. The Power and SWR meters show
+the tune carrier while it's on the air.
+
+- This is the only time the program makes the radio transmit, and only when
+  you press the button. Make sure you're on a ham band and the frequency is
+  clear before tuning.
+- Works on Icom radios with an internal tuner (IC-7300, IC-705 with its tuner,
+  IC-7610, IC-9700...) and through Hamlib rigctld. Tuning stops on its own
+  after 20 seconds if the radio doesn't report back.
 
 ## Changing frequency from the display
 
