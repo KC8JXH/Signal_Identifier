@@ -668,12 +668,12 @@ def test_nothing_transmits_until_tune_is_pressed():
     ([2, 2, 0], "failed"),
     # tuner was OFF on this band and the radio takes a moment to start tuning:
     # the early "off" readings are not a failure
-    ([0] * 12 + [2, 2, 2, 1], "done"),
+    ([0, 0, 2, 2, 1], "done"),
     # tuner was already ON: an early "on" is not the end of the tune
-    ([1] * 12 + [2, 2, 2, 0], "failed"),
+    ([1, 1, 2, 2, 0], "failed"),
     # a tune the program can't see (no "tuning", no transmit reading) that reads
     # "off" for a while before ending "on": the early "off"s are not a failure
-    ([0] * 20 + [1], "done"),
+    ([0, 0, 0, 1], "done"),
 ])
 def test_poller_follows_the_tune(states, expect):
     import time
@@ -836,26 +836,12 @@ def test_poller_sends_filter_with_mode():
         p.stop()
 
 
-@pytest.mark.parametrize("end_state,expect", [(1, "done"), (0, "failed")])
-def test_tune_follows_the_transmit_carrier(end_state, expect):
-    """The radio transmits while tuning but its tuner reading says "off" the
-    whole time; the result is only read once the carrier has stopped."""
+def test_radio_is_left_alone_during_a_tune():
+    """The radio cuts a tune short if it's sent commands meanwhile (seen in a
+    real tune log): after starting, nothing for a second, then only the
+    tuner status, at most twice a second."""
     import time
-    st = {"tx_left": 25}                       # transmits for ~25 TX queries
-    base = ic7300(tx=0)
-
-    def respond(cmd):
-        if cmd[4] == 0x1C and cmd[5] == 0x00 and len(cmd) == 7:
-            tx = 1 if st["tx_left"] > 0 else 0
-            st["tx_left"] -= 1
-            return cmd + b"\xfe\xfe\xe0\x94\x1c\x00" + bytes([tx]) + b"\xfd"
-        if cmd[4] == 0x1C and cmd[5] == 0x01:
-            if len(cmd) == 8:
-                return cmd + b"\xfe\xfe\xe0\x94\xfb\xfd"
-            now = 0 if st["tx_left"] > 0 else end_state
-            return cmd + b"\xfe\xfe\xe0\x94\x1c\x01" + bytes([now]) + b"\xfd"
-        return base(cmd)
-    fs = FakeSerial(respond)
+    fs = FakeSerial(ic7300(tx=0, tuner=[1, 2, 2, 2, 2, 2, 1]))
     proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
     p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
     try:
@@ -863,13 +849,24 @@ def test_tune_follows_the_transmit_carrier(end_state, expect):
             if p.get().ok:
                 break
             time.sleep(0.05)
-        st["tx_left"] = 25
+        time.sleep(0.2)
         p.start_tune()
-        for _ in range(140):
+        t0 = time.monotonic()
+        start = len(fs.written)
+        for _ in range(120):
             if p.tune_status in ("done", "failed"):
                 break
             time.sleep(0.05)
-        assert p.tune_status == expect
-        assert any(row[2] for row in p.tune_log[1:])          # the carrier was seen
+        elapsed = time.monotonic() - t0
+        assert p.tune_status == "done"
+        during = fs.written[start:]
+        tune_cmd = b"\xfe\xfe\x94\xe0\x1c\x01\x02\xfd"
+        status_q = b"\xfe\xfe\x94\xe0\x1c\x01\xfd"
+        after = during[during.index(tune_cmd) + 1:]
+        last_q = max(i for i, w in enumerate(after) if w == status_q)
+        tune_part = after[:last_q + 1]          # up to the check that saw the tune had ended
+        # during the tune: only tuner status queries (1C 01), at most twice a second
+        assert tune_part and all(w == status_q for w in tune_part), tune_part[:5]
+        assert len(tune_part) <= elapsed * 2 + 1
     finally:
         p.stop()

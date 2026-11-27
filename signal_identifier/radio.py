@@ -933,6 +933,7 @@ class RadioPoller:
         self._tune_seen = False    # has the radio been seen tuning since Tune was pressed?
         self._tune_active_at = 0.0
         self._tune_retried = False
+        self._tune_polled = 0.0
         self.tune_log = []         # (seconds, tuner, transmitting, SWR) during the last tune
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -955,6 +956,11 @@ class RadioPoller:
             now = time.monotonic()
             self._do_requests()
             self._watch_tune(now)
+            if self.tune_status in ("starting", "tuning"):
+                # The radio cuts a tune short when it's sent commands meanwhile:
+                # stay quiet (only _watch_tune's occasional tuner check) until it ends.
+                time.sleep(0.05)
+                continue
             if (self.has_scope and self.keep_scope_on and self.state.ok and now - last_kick >= 5.0
                     and self.protocol.latest_scope(max_age=3.0) is None):
                 last_kick = now
@@ -1117,21 +1123,20 @@ class RadioPoller:
             self._tune_seen = False
             self._tune_active_at = 0.0
             self._tune_retried = False
+            self._tune_polled = 0.0
             self.tune_log = [(0.0, "start (tuner on, then tune)", "accepted" if ok else "refused", None)]
             return
-        if self.tune_status != "tuning" or now - self._tune_since < 0.3:
-            return
+        if self.tune_status != "tuning" or now - self._tune_since < 1.0:
+            return                              # leave the radio alone while it starts
+        if now - self._tune_polled < 0.5:
+            return                              # and only ask twice a second
+        self._tune_polled = now
         elapsed = now - self._tune_since
         try:
-            st = self.protocol.read_tuner()
+            st = self.protocol.read_tuner()     # the only thing asked during a tune
         except Exception:
             st = None
-        try:
-            tx = self.protocol.read_tx()        # asked directly: don't rely on the meter loop
-        except Exception:
-            tx = None
-        if tx is None:
-            tx = self.state.tx
+        tx = None
         swr = self.state.swr
         self.tune_log.append((round(elapsed, 2), st, tx, swr))
         del self.tune_log[:-200]
@@ -1144,7 +1149,7 @@ class RadioPoller:
             if swr is not None:
                 self.tune_swr = swr
             return
-        if not self._tune_seen and not self._tune_retried and elapsed > 3.0:
+        if not self._tune_seen and not self._tune_retried and elapsed > 3.0 and st == "off":
             # still nothing (no carrier, not tuning): ask once more, tuner on first
             self._tune_retried = True
             try:
