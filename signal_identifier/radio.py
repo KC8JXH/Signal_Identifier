@@ -489,8 +489,15 @@ class IcomCIV(SerialProtocol):
     can_tune = True
 
     def start_tune(self) -> bool:
-        """1C 01 02: start the internal antenna tuner, exactly like holding the
-        TUNER button. The radio keys up at low power, tunes and unkeys itself."""
+        """Start the internal antenna tuner, like holding the TUNER button: the
+        radio keys up at low power, tunes and unkeys itself.
+
+        Holding the button first switches the tuner on. Over CI-V the "tune"
+        command (1C 01 02) is accepted but ignored while the tuner is off, so
+        switch it on first (1C 01 01), then tune."""
+        if self.read_tuner() != "on":
+            self._set(b"\x1c\x01\x01", timeout=1.0)
+            time.sleep(0.25)
         return self._set(b"\x1c\x01\x02", timeout=1.0)
 
     def read_tuner(self):
@@ -925,6 +932,7 @@ class RadioPoller:
         self._tune_since = 0.0
         self._tune_seen = False    # has the radio been seen tuning since Tune was pressed?
         self._tune_active_at = 0.0
+        self._tune_retried = False
         self.tune_log = []         # (seconds, tuner, transmitting, SWR) during the last tune
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -1108,7 +1116,8 @@ class RadioPoller:
             self._tune_since = now
             self._tune_seen = False
             self._tune_active_at = 0.0
-            self.tune_log = [(0.0, "start", "accepted" if ok else "refused", None)]
+            self._tune_retried = False
+            self.tune_log = [(0.0, "start (tuner on, then tune)", "accepted" if ok else "refused", None)]
             return
         if self.tune_status != "tuning" or now - self._tune_since < 0.3:
             return
@@ -1134,6 +1143,16 @@ class RadioPoller:
             self._tune_active_at = now
             if swr is not None:
                 self.tune_swr = swr
+            return
+        if not self._tune_seen and not self._tune_retried and elapsed > 3.0:
+            # still nothing (no carrier, not tuning): ask once more, tuner on first
+            self._tune_retried = True
+            try:
+                ok = self.protocol.start_tune()
+            except Exception:
+                ok = False
+            self.tune_log.append((round(elapsed, 2), "retry (tuner on, then tune)",
+                                  "accepted" if ok else "refused", None))
             return
         if self._tune_seen:
             if now - self._tune_active_at < 0.5:

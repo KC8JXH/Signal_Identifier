@@ -609,6 +609,48 @@ def test_icom_start_tune_sends_tuner_command():
     assert proto.read_tuner() == "tuning"
 
 
+def test_start_tune_switches_tuner_on_first():
+    """Like holding TUNER: with the tuner off, switch it on (1C 01 01), then tune (1C 01 02)."""
+    fs = FakeSerial(ic7300(tuner=[0]))
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    fs.written.clear()
+    assert proto.start_tune() is True
+    on, tune = b"\xfe\xfe\x94\xe0\x1c\x01\x01\xfd", b"\xfe\xfe\x94\xe0\x1c\x01\x02\xfd"
+    assert on in fs.written and tune in fs.written
+    assert fs.written.index(on) < fs.written.index(tune)
+    # tuner already on: just tune
+    fs = FakeSerial(ic7300(tuner=[1]))
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    fs.written.clear()
+    proto.start_tune()
+    assert on not in fs.written and tune in fs.written
+
+
+def test_tune_retries_once_if_nothing_happens():
+    """Radio accepts but never starts (as in a real log): one retry, then NO MATCH."""
+    import time
+    fs = FakeSerial(ic7300(tx=0, tuner=[0]))
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    p.TUNE_QUIET_LIMIT = 5.0
+    try:
+        for _ in range(40):
+            if p.get().ok:
+                break
+            time.sleep(0.05)
+        p.start_tune()
+        for _ in range(160):
+            if p.tune_status in ("done", "failed"):
+                break
+            time.sleep(0.05)
+        assert p.tune_status == "failed"
+        assert any(str(row[1]).startswith("retry") for row in p.tune_log)
+        tunes = [w for w in fs.written if w == b"\xfe\xfe\x94\xe0\x1c\x01\x02\xfd"]
+        assert len(tunes) == 2
+    finally:
+        p.stop()
+
+
 def test_nothing_transmits_until_tune_is_pressed():
     import time
     fs = FakeSerial(ic7300(tx=0, tuner=[1]))
@@ -651,7 +693,7 @@ def test_poller_follows_the_tune(states, expect):
                 break
             time.sleep(0.05)
         assert p.tune_status == expect
-        assert p.tune_log and p.tune_log[0][1] == "start"
+        assert p.tune_log and str(p.tune_log[0][1]).startswith("start")
     finally:
         p.stop()
 
