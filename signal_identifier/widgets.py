@@ -364,11 +364,15 @@ class BandScope(tk.Canvas):
                 a = rf_frequency(st.freq_hz, st.mode, 100, st.cw_pitch)
                 b = rf_frequency(st.freq_hz, st.mode, 2900, st.cw_pitch)
             if a is not None and b is not None:
+                # Passband: thin edge lines and a bracket along the top - no fill,
+                # so nothing under it is ever hidden (a filled box looked like a
+                # dead spot in the spectrum).
                 x0, x1 = sorted((self.hz_to_x(a), self.hz_to_x(b)))
                 x1 = max(x1, x0 + 2)
-                self.create_rectangle(x0, spec_top, x1, bottom, fill="#1d3a5f", outline="",
-                                      tags=("ov", "pband"))
-                self.tag_lower("pband", "spec")   # behind the trace, like the radio
+                edge = "#8fb8de"
+                for x in (x0, x1):
+                    self.create_line(x, spec_top, x, bottom, fill=edge, dash=(2, 2), tags="ov")
+                self.create_line(x0, spec_top + 1, x1, spec_top + 1, fill=edge, width=3, tags="ov")
             xd = self.hz_to_x(st.freq_hz)
             colour = "#ff4040" if st.tx else "#ffffff"
             self.create_line(xd, spec_top, xd, bottom, fill=colour, width=1, tags="ov")
