@@ -585,16 +585,19 @@ class IcomCIV(SerialProtocol):
     ICOM_SET = {"LSB": 0x00, "USB": 0x01, "AM": 0x02, "CW": 0x03, "RTTY": 0x04, "FM": 0x05,
                 "CW-R": 0x07, "RTTY-R": 0x08}
 
-    def set_mode(self, mode: str) -> bool:
+    def set_mode(self, mode: str, filt: int | None = None) -> bool:
+        """Mode, and the receive filter (FIL1-3) to go with it. Without a filter
+        the radio picks its own default filter for the mode."""
         data = mode.endswith("-D")
         base = mode[:-2] if data else mode
         code = self.ICOM_SET.get(base)
         if code is None:
             return False
-        ok = self._set(bytes([0x06, code]))
+        f = filt if filt in (1, 2, 3) else None
+        ok = self._set(bytes([0x06, code]) + (bytes([f]) if f and not data else b""))
         if base in ("USB", "LSB", "AM", "FM"):
-            # data mode on (with filter 1) or off
-            self._set(b"\x1a\x06" + (b"\x01\x01" if data else b"\x00\x00"))
+            # data mode on (with its filter) or off
+            self._set(b"\x1a\x06" + (b"\x01" + bytes([f or 1]) if data else b"\x00\x00"))
         return ok
 
     def close(self):
@@ -1012,13 +1015,15 @@ class RadioPoller:
         chk = self._mode_check
         if not chk:
             return
-        want, since, left = chk
+        want, since, left, filt = chk
         if actual == want or time.monotonic() - since > 4:
             self._mode_check = None
         elif time.monotonic() - since > 0.4 and left > 0:
-            self._mode_check = (want, time.monotonic(), left - 1)
+            self._mode_check = (want, time.monotonic(), left - 1, filt)
             try:
-                if self.protocol.set_mode(want):
+                ok = self.protocol.set_mode(want, filt) if filt and isinstance(self.protocol, IcomCIV) \
+                    else self.protocol.set_mode(want)
+                if ok:
                     with self.lock:
                         self.state.mode = want
             except Exception:
@@ -1053,11 +1058,16 @@ class RadioPoller:
             except Exception:
                 pass
         if md and hasattr(self.protocol, "set_mode"):
+            md, mf = md
             try:
-                if self.protocol.set_mode(md):
+                ok = self.protocol.set_mode(md, mf) if mf and isinstance(self.protocol, IcomCIV) \
+                    else self.protocol.set_mode(md)
+                if ok:
                     with self.lock:
                         self.state.mode = md
-                    self._mode_check = (md, time.monotonic(), 1)
+                        if mf:
+                            self.state.filter = mf
+                    self._mode_check = (md, time.monotonic(), 1, mf)
             except Exception:
                 pass
         if sc == "whole":
@@ -1129,10 +1139,10 @@ class RadioPoller:
         with self.lock:
             self._filter_to = int(n)
 
-    def set_mode(self, mode: str):
-        """Ask the radio to change mode (done in the background)."""
+    def set_mode(self, mode: str, filt: int | None = None):
+        """Ask the radio to change mode, optionally with filter FIL1-3 (in the background)."""
         with self.lock:
-            self._mode_to = mode
+            self._mode_to = (mode, filt)
 
     def scope_whole_band(self):
         self.set_span(500_000)

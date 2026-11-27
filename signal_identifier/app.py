@@ -292,8 +292,11 @@ class App:
         self.source = None
         self.radio = None
         self.last_result = None
+        self._radio_cmd_at = 0.0      # last time we changed band / mode / filter
         self._analysis_thread = None
         self._analysis_result = None
+        self._pool = None             # worker process for identification
+        self._pool_failed = False
         self.meter_pos = 0.0
         self.settings = load_settings()
         root.title(APP_NAME)
@@ -621,8 +624,13 @@ class App:
     def _band_default(self, old_hz, new_hz, mode):
         """Moved onto another band (or the AM broadcast band): switch to its default mode."""
         new_mode = mode_after_move(old_hz, new_hz, mode)
-        if new_mode and self.radio is not None:
-            self.radio.set_mode(new_mode)
+        if self.radio is None:
+            return
+        if new_mode:
+            self._set_mode(new_mode, new_hz)
+        elif old_hz and self._band_key(old_hz) != self._band_key(new_hz):
+            self._radio_cmd_at = time.monotonic()     # same mode, new band: its filter
+            self.radio.set_filter(self._filter_for(new_hz))
 
     def _freq_wheel(self, e):
         self._freq_step(+1 if e.delta > 0 else -1)
@@ -653,8 +661,12 @@ class App:
             new_mode = mode_after_move(st.freq_hz, hz, st.mode)
             target = R.click_target(hz, new_mode or st.mode, self.band.span_half())
             self._tune(target, st)
-            if new_mode and target is not None:
-                self.radio.set_mode(new_mode)
+            if target is not None:
+                if new_mode:
+                    self._set_mode(new_mode, target)
+                elif self._band_key(st.freq_hz) != self._band_key(target):
+                    self._radio_cmd_at = time.monotonic()
+                    self.radio.set_filter(self._filter_for(target))
 
     def _span_click(self, half: int):
         """A span tick box: set the radio's scope to Center mode with that span."""
@@ -789,6 +801,7 @@ class App:
                 self._set_tx_meters(st)
                 self._show_tune()
                 self._highlight(st)
+                self._follow_radio_filter(st)
             else:
                 self.lcd_freq.config(text="--.---.--", fg="#4a5560")
                 self.lcd_mode.config(text="no answer", fg="#ff8787")
@@ -873,11 +886,41 @@ class App:
         else:
             self.ameter.pack_forget()
 
+    # -- receive filter, remembered per band ------------------------------------
+
+    def _band_key(self, hz):
+        return band_button_for(hz) or ("AM broadcast" if hz and hz < 1_700_000 else "other")
+
+    def _filter_for(self, hz) -> int:
+        """The filter last used on this band (FIL1 the first time)."""
+        return int(self.settings.get("band_filter", {}).get(self._band_key(hz), 1))
+
+    def _remember_filter(self, hz, n: int):
+        bf = self.settings.setdefault("band_filter", {})
+        if bf.get(self._band_key(hz)) != n:
+            bf[self._band_key(hz)] = n
+            save_settings(self.settings)
+
+    def _set_mode(self, mode: str, hz):
+        """Change mode, keeping the band's remembered filter."""
+        self._radio_cmd_at = time.monotonic()
+        self.radio.set_mode(mode, self._filter_for(hz) if hz else None)
+
     def _filter_click(self, n: int):
         if self.radio is None:
             self.status.config(text="Connect the radio first to change the filter.")
             return
+        st = self.radio.get()
+        self._radio_cmd_at = time.monotonic()
         self.radio.set_filter(n)
+        if st.ok and st.freq_hz:
+            self._remember_filter(st.freq_hz, n)
+
+    def _follow_radio_filter(self, st):
+        """Filter changed on the radio itself: remember it for this band. Not
+        right after we changed band/mode/filter, while the radio is switching."""
+        if st.filter in (1, 2, 3) and st.freq_hz and time.monotonic() - self._radio_cmd_at > 3:
+            self._remember_filter(st.freq_hz, st.filter)
 
     def _mode_click(self, mode: str):
         if self.radio is None:
@@ -894,7 +937,7 @@ class App:
             else:
                 self.status.config(text="DATA works in USB or LSB.")
                 return
-        self.radio.set_mode(mode)
+        self._set_mode(mode, st.freq_hz if st.ok else None)
         self.status.config(text=f"Switching the radio to {mode}")
 
     def _band_button(self, name: str):
@@ -913,8 +956,9 @@ class App:
             memory.pop(name, None)                  # pressing the current band again: go to its default spot
         freq, mode = band_target(name, st.mode, memory)
         save_settings(self.settings)
+        self._radio_cmd_at = time.monotonic()
         self.radio.tune(freq)
-        self.radio.set_mode(mode)            # every band starts in its default mode
+        self._set_mode(mode, freq)           # every band starts in its default mode, with its filter
         self.status.config(text=f"Going to {name} m: {R.format_freq(freq)} {mode}")
 
     def _set_meter(self, db, note: str):
@@ -1030,6 +1074,11 @@ class App:
         self.stop()
         if self.radio is not None:
             self.radio.stop()
+        if self._pool is not None:
+            try:
+                self._pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
         self.root.destroy()
 
     # -- updates -------------------------------------------------------------------
@@ -1080,11 +1129,31 @@ class App:
         self.root.after(ANALYSE_EVERY_MS, self.tick)
 
     def _analyse_in_background(self, audio, rate, secs, source):
+        """Identify signals in a separate process when possible: in a thread of
+        this process it would take turns with the window (Python runs one
+        thread at a time), which made menus and clicks laggy on slower PCs."""
         try:
-            res = analyze(audio, rate, keep_spectrogram=False)
+            pool = self._worker_pool()
+            if pool is not None:
+                try:
+                    res = pool.submit(analyze, audio, rate, False).result(timeout=60)
+                except Exception:
+                    self._pool_failed = True      # e.g. the worker couldn't start: do it here instead
+                    res = analyze(audio, rate, keep_spectrogram=False)
+            else:
+                res = analyze(audio, rate, keep_spectrogram=False)
             self._analysis_result = (res, secs, source, None)
         except Exception as e:
             self._analysis_result = (None, secs, source, e)
+
+    def _worker_pool(self):
+        if self._pool is None and not self._pool_failed:
+            try:
+                from concurrent.futures import ProcessPoolExecutor
+                self._pool = ProcessPoolExecutor(max_workers=1)
+            except Exception:
+                self._pool_failed = True
+        return None if self._pool_failed else self._pool
 
     def _collect_analysis(self):
         """Runs on the window's thread: show the latest background result."""
@@ -1157,6 +1226,8 @@ class App:
 
 
 def main(demo: bool = False):
+    import sys
+    sys.setswitchinterval(0.002)   # let the window take its turn sooner when other threads are busy
     root = tk.Tk()
     try:
         ttk.Style().theme_use("vista")

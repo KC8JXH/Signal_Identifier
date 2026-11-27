@@ -107,8 +107,8 @@ Elecraft. Set **Settings > Speed** to match the CAT rate set in your radio's men
 ### The scope (Icom radios)
 
 The big display is the radio's own scope, laid out like the IC-7300's screen:
-the **spectrum** on top (signal strength across the span, with a dotted grid of
-10 divisions) and the **waterfall** below it. The white ▼ and line mark the
+the **spectrum** on top (signal strength across the span, grey with a red
+edge, on a dotted grid of 10 divisions) and the **waterfall** below it. The white ▼ and line mark the
 frequency you're on, and the shaded area is what you're hearing (the receive
 passband). The marker turns red while you transmit. Signals the program has
 identified are labelled at their frequency, just above the spectrum.
@@ -151,9 +151,10 @@ calibrated reading. For other radios it's approximate.
   (S1 … S9, +20 … +60 dB in red). While you transmit it turns red and becomes a
   power meter in watts (full scale 100 W, or 10 W for the IC-705 and IC-905).
   Hide or show it with **Settings > Analog meter**.
-- **FIL1 / FIL2 / FIL3** choose the radio's receive filter for the mode you're
-  in; the one in use lights up, also when you change it on the radio. (USB-D
-  and LSB-D have their own filter setting on the IC-7300, as on the radio.)
+- **FIL1 / FIL2 / FIL3** choose the radio's receive filter; the one in use
+  lights up. **Each band remembers its filter** (FIL1 the first time): switching
+  band, or changing mode, puts the band's filter back. Changing the filter on
+  the radio itself is remembered for that band too.
 - **Transmit bars**, under the S-meter, show the radio's own meters while it
   transmits:
   - **Po**: output power in watts.

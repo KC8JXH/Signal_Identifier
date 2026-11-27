@@ -753,3 +753,39 @@ def test_icom_set_filter_commands():
 def test_icom_amps_scale():
     assert R.icom_amps(0) == 0 and abs(R.icom_amps(97) - 10) < 0.01
     assert abs(R.icom_amps(146) - 15) < 0.01 and abs(R.icom_amps(241) - 25) < 0.01
+
+
+
+def test_set_mode_with_filter_commands():
+    """Band changes send the band's remembered filter with the mode."""
+    fs = FakeSerial(ic7300())
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    fs.written.clear()
+    proto.set_mode("LSB", 1)
+    assert b"\xfe\xfe\x94\xe0\x06\x00\x01\xfd" in fs.written                # LSB, FIL1
+    assert b"\xfe\xfe\x94\xe0\x1a\x06\x00\x00\xfd" in fs.written            # data off
+    fs.written.clear()
+    proto.set_mode("USB-D", 3)
+    assert b"\xfe\xfe\x94\xe0\x06\x01\xfd" in fs.written                    # USB
+    assert b"\xfe\xfe\x94\xe0\x1a\x06\x01\x03\xfd" in fs.written            # data on, FIL3
+    fs.written.clear()
+    proto.set_mode("CW")                                                         # no filter: radio's own
+    assert fs.written[0] == b"\xfe\xfe\x94\xe0\x06\x03\xfd"
+
+
+def test_poller_sends_filter_with_mode():
+    import time
+    fs = FakeSerial(ic7300())
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    try:
+        for _ in range(40):
+            if p.get().ok:
+                break
+            time.sleep(0.05)
+        p.tune(7_200_000)
+        p.set_mode("LSB", 3)
+        time.sleep(0.4)
+        assert b"\xfe\xfe\x94\xe0\x06\x00\x03\xfd" in fs.written
+    finally:
+        p.stop()

@@ -421,8 +421,8 @@ class BandScope(tk.Canvas):
                     self.create_text(x + (3 if k == 0 else -3 if k == 10 else 0), 8,
                                      text=self._freq_text(lo + step * k, step), fill="#cfd8e0",
                                      anchor=anchor, font=("Consolas", 9), tags="static")
-        self.create_polygon(0, bottom, w, bottom, fill="#1864ab", outline="", tags=("static", "spec"))
-        self.create_line(0, bottom, w, bottom, fill="#d0ebff", width=1, tags=("static", "specline"))
+        self.create_polygon(0, bottom, w, bottom, fill="#7d838c", outline="", tags=("static", "spec"))
+        self.create_line(0, bottom, w, bottom, fill="#ff3030", width=2, tags=("static", "specline"))
         self.tag_lower("img")
         self.tag_raise("static")
 
