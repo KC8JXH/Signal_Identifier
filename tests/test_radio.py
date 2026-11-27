@@ -626,27 +626,48 @@ def test_start_tune_switches_tuner_on_first():
     assert on not in fs.written and tune in fs.written
 
 
-def test_tune_retries_once_if_nothing_happens():
-    """Radio accepts but never starts (as in a real log): one retry, then NO MATCH."""
+def test_tune_keeps_trying_for_5_seconds():
+    """No match (tuner keeps reading off): the tune is restarted until 5 s have
+    passed, then NO MATCH."""
     import time
     fs = FakeSerial(ic7300(tx=0, tuner=[0]))
     proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
     p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
-    p.TUNE_QUIET_LIMIT = 5.0
     try:
         for _ in range(40):
             if p.get().ok:
                 break
             time.sleep(0.05)
         p.start_tune()
-        for _ in range(160):
-            if p.tune_status in ("done", "failed"):
+        t0 = time.monotonic()
+        while p.tune_status not in ("done", "failed") and time.monotonic() - t0 < 9:
+            time.sleep(0.05)
+        took = time.monotonic() - t0
+        assert p.tune_status == "failed" and 5.0 <= took < 7.5
+        tunes = [w for w in fs.written if w == b"\xfe\xfe\x94\xe0\x1c\x01\x02\xfd"]
+        assert len(tunes) >= 3                   # first try plus restarts
+        assert sum(str(r[1]).startswith("retry") for r in p.tune_log) == len(tunes) - 1
+    finally:
+        p.stop()
+
+
+def test_tune_restart_can_succeed():
+    """First attempt gives up (off), the restart finds a match (on) -> TUNED."""
+    import time
+    fs = FakeSerial(ic7300(tx=0, tuner=[0, 0, 2, 2, 1]))
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    try:
+        for _ in range(40):
+            if p.get().ok:
                 break
             time.sleep(0.05)
-        assert p.tune_status == "failed"
-        assert any(str(row[1]).startswith("retry") for row in p.tune_log)
-        tunes = [w for w in fs.written if w == b"\xfe\xfe\x94\xe0\x1c\x01\x02\xfd"]
-        assert len(tunes) == 2
+        p.start_tune()
+        t0 = time.monotonic()
+        while p.tune_status not in ("done", "failed") and time.monotonic() - t0 < 9:
+            time.sleep(0.05)
+        assert p.tune_status == "done"
+        assert any(str(r[1]).startswith("retry") for r in p.tune_log)
     finally:
         p.stop()
 
@@ -685,7 +706,7 @@ def test_poller_follows_the_tune(states, expect):
             if p.get().ok:
                 break
             time.sleep(0.05)
-        p.TUNE_QUIET_LIMIT = 2.5            # (15 s in real use) keep the test quick
+        p.TUNE_PERSIST = 2.5                # (5 s in real use) keep the test quick
         p.start_tune()
         assert p.tune_status == "starting"
         for _ in range(140):
@@ -889,5 +910,28 @@ def test_quick_tune_reports_tuned_promptly():
         while p.tune_status not in ("done", "failed") and time.monotonic() - t0 < 5:
             time.sleep(0.05)
         assert p.tune_status == "done" and time.monotonic() - t0 < 2.5
+    finally:
+        p.stop()
+
+
+
+def test_radio_kicking_out_of_a_real_tune_is_final():
+    """The radio tuned for a while and then gave up by itself: that's its
+    verdict - NO MATCH at once, no restart."""
+    import time
+    fs = FakeSerial(ic7300(tx=0, tuner=[1, 2, 2, 2, 2, 2, 0]))   # ~2.5 s of tuning, then off
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    try:
+        for _ in range(40):
+            if p.get().ok:
+                break
+            time.sleep(0.05)
+        p.start_tune()
+        t0 = time.monotonic()
+        while p.tune_status not in ("done", "failed") and time.monotonic() - t0 < 9:
+            time.sleep(0.05)
+        assert p.tune_status == "failed"
+        assert not any(str(r[1]).startswith("retry") for r in p.tune_log)
     finally:
         p.stop()

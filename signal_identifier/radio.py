@@ -932,9 +932,9 @@ class RadioPoller:
         self._tune_since = 0.0
         self._tune_seen = False    # has the radio been seen tuning since Tune was pressed?
         self._tune_active_at = 0.0
-        self._tune_retried = False
         self._tune_polled = 0.0
         self._tune_last = None
+        self._tune_seen_from = 0.0
         self.tune_log = []         # (seconds, tuner, transmitting, SWR) during the last tune
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -1105,7 +1105,8 @@ class RadioPoller:
             self.tune_status = "starting"
             self.tune_swr = None
 
-    TUNE_QUIET_LIMIT = 6.0    # s: tuner still "off" and the tune never seen -> no match
+    TUNE_PERSIST = 5.0        # s: keep restarting a tune that drops out at once, this long
+    TUNE_REAL_ATTEMPT = 1.5   # s: a tune that ran this long and then stopped is the radio's verdict
     TUNE_TIMEOUT = 30.0
 
     def _watch_tune(self, now: float):
@@ -1123,9 +1124,9 @@ class RadioPoller:
             self._tune_since = now
             self._tune_seen = False
             self._tune_active_at = 0.0
-            self._tune_retried = False
             self._tune_polled = 0.0
             self._tune_last = None
+            self._tune_seen_from = now
             self.tune_log = [(0.0, "start (tuner on, then tune)", "accepted" if ok else "refused", None)]
             return
         if self.tune_status != "tuning" or now - self._tune_since < 1.0:
@@ -1145,38 +1146,43 @@ class RadioPoller:
         if st == "tuning" or tx:
             # The radio is tuning / sending the tune carrier. Only after it
             # stops does "on"/"off" mean the result: before, it's just how the
-            # tuner was left on this band.
+            # tuner was left on this band. We never stop a tune ourselves.
+            if not self._tune_seen:
+                self._tune_seen_from = now
             self._tune_seen = True
             self._tune_active_at = now
             if swr is not None:
                 self.tune_swr = swr
             return
-        if not self._tune_seen and not self._tune_retried and elapsed > 3.0 and st == "off":
-            # still nothing (no carrier, not tuning): ask once more, tuner on first
-            self._tune_retried = True
-            try:
-                ok = self.protocol.start_tune()
-            except Exception:
-                ok = False
-            self.tune_log.append((round(elapsed, 2), "retry (tuner on, then tune)",
-                                  "accepted" if ok else "refused", None))
+        if st == "off" and (not self._tune_seen or now - self._tune_active_at >= 0.5):
+            # No match: the radio stopped with its tuner off. If it ran a real
+            # tune and kicked out by itself, that's its decision: NO MATCH.
+            # If it dropped out almost at once (or we never saw it tune), give
+            # it another go, until TUNE_PERSIST seconds have passed.
+            ran = (self._tune_active_at - self._tune_seen_from) if self._tune_seen else 0.0
+            if ran < self.TUNE_REAL_ATTEMPT and elapsed < self.TUNE_PERSIST:
+                try:
+                    ok = self.protocol.start_tune()
+                except Exception:
+                    ok = False
+                self.tune_log.append((round(elapsed, 2), "retry (tuner on, then tune)",
+                                      "accepted" if ok else "refused", None))
+                self._tune_seen = False
+                self._tune_last = None
+                self._tune_polled = now + 0.5     # quiet for a second again
+                return
+            self.tune_status = "failed"
             return
         if self._tune_seen:
             if now - self._tune_active_at < 0.5:
                 return                          # make sure it has really finished
             if st == "on":
                 self.tune_status = "done"
-            elif st == "off":
-                self.tune_status = "failed"     # the radio gave up (no match found)
-        else:
+        elif st == "on" and self._tune_last == "on":
             # Never caught it tuning: a quick tune (e.g. from the radio's stored
-            # match) can finish within the quiet first second. The IC-7300
-            # switches its tuner off when a tune fails, so "on" at two checks
-            # in a row means it tuned.
-            if st == "on" and self._tune_last == "on":
-                self.tune_status = "done"
-            elif st == "off" and elapsed > self.TUNE_QUIET_LIMIT:
-                self.tune_status = "failed"
+            # match) can finish within the quiet second. The IC-7300 switches its
+            # tuner off when a tune fails, so "on" twice in a row means it tuned.
+            self.tune_status = "done"
         self._tune_last = st
         if self.tune_status == "tuning" and elapsed > self.TUNE_TIMEOUT:
             self.tune_status = "failed"

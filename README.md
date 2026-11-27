@@ -199,6 +199,10 @@ by itself. The button shows **TUNING…** while that happens, then **TUNED** or
 program's folder). The Power and SWR meters show
 the tune carrier while it's on the air.
 
+- While the radio is tuning, the program leaves it alone and never stops the
+  tune itself. If the radio drops out almost at once without a match, the
+  program starts the tune again, for up to 5 seconds. If the radio runs a
+  proper tune and then gives up by itself, that's its verdict: **NO MATCH**.
 - This is the only time the program makes the radio transmit, and only when
   you press the button. Make sure you're on a ham band and the frequency is
   clear before tuning.
