@@ -12,10 +12,10 @@ from tkinter import messagebox, ttk
 import numpy as np
 
 from . import radio as R
-from .classify import F_HI, analyze
+from .classify import analyze
 from .bandplan import BAND_BUTTONS, band_button_for, band_target
 from .recorder import Recorder, elapsed_text
-from .widgets import BandScope, MeterBar, Waterfall, meter_fraction, swr_fraction
+from .widgets import BandScope, MeterBar, meter_fraction, swr_fraction
 
 MODE_BUTTONS = ["LSB", "USB", "CW", "RTTY", "AM", "FM"]
 APP_NAME = "IC7300 Rig Interface"
@@ -393,7 +393,6 @@ class App:
         sm.add_separator()
         self.click_tune = tk.BooleanVar(value=self.settings.get("click_to_tune", True))
         sm.add_checkbutton(label="Click to tune radio", variable=self.click_tune, command=self._save_click_tune)
-        sm.add_command(label="Show whole band", command=self._whole_band)
         self.keep_scope = tk.BooleanVar(value=self.settings.get("keep_scope_on", True))
         sm.add_checkbutton(label="Keep scope on", variable=self.keep_scope, command=self._save_keep_scope)
         sm.add_separator()
@@ -442,16 +441,21 @@ class App:
                           command=lambda n=name: self._band_button(n))
             b.pack(side="left", padx=1)
             self.band_btns[name] = b
-        bf = tk.Frame(root, padx=8)
-        bf.pack(fill="x")
-        self.band = BandScope(bf, on_click=self._band_click)
-        self.band.pack(fill="x")
+        # scope span, like the radio's SPAN choices (Center mode)
+        spans = tk.Frame(bandbar)
+        spans.pack(side="left", padx=(14, 0))
+        self.span_var = tk.StringVar(value="")
+        self._span_pending = None     # (span, time) just asked for, until the radio shows it
+        for half in R.SCOPE_SPANS:
+            tk.Checkbutton(spans, text=R.span_label(half), variable=self.span_var, onvalue=str(half),
+                           offvalue="", font=("Segoe UI", 8), padx=0, pady=0,
+                           command=lambda h=half: self._span_click(h)).pack(side="left", padx=(0, 2))
 
-        # -- detailed audio waterfall fills the rest of the window
-        wf = tk.Frame(root, padx=8, pady=8)
-        wf.pack(fill="both", expand=True)
-        self.wf = Waterfall(wf, fmax=F_HI, on_click=self._waterfall_click)
-        self.wf.pack(fill="both", expand=True)
+        # -- the radio's scope (spectrum + waterfall) fills the rest of the window
+        bf = tk.Frame(root, padx=8, pady=6)
+        bf.pack(fill="both", expand=True)
+        self.band = BandScope(bf, on_click=self._band_click)
+        self.band.pack(fill="both", expand=True)
 
         self._fill_devices()
         self._fill_ports()
@@ -463,7 +467,6 @@ class App:
         root.after(100, self._collect_analysis)
         root.after(100, self.level_tick)
         root.after(200, self.radio_tick)
-        root.after(80, self.wf_tick)
         root.after(100, self.band_tick)
         self.clock_tick()
         if demo:
@@ -485,6 +488,7 @@ class App:
             if self.radio is not None and self.radio.has_scope:
                 st = self.radio.get()
                 self.band.update_scope(self.radio.scope(), st if st.ok else None)
+                self._sync_span()
                 if self.band.last_sweep is None and time.monotonic() - self.radio_started > 6:
                     self.band.show_no_signal(self.radio.scope_message or
                                              "No band-scope data from the radio yet. On the IC-7300: MENU > SET > "
@@ -496,9 +500,9 @@ class App:
                         "The radio stopped sending scope data. Turn its scope on, or tick "
                         "Settings > Keep scope on.")
             elif self.radio is not None:
-                self.band.set_message("The whole-band view needs an Icom radio (IC-7300, IC-705, IC-7610, IC-9700).")
+                self.band.set_message("The scope needs an Icom radio (IC-7300, IC-705, IC-7610, IC-9700).")
             else:
-                self.band.set_message("Connect an Icom radio (like the IC-7300) to see the whole band here.")
+                self.band.set_message("Connect the radio (Settings > Connect radio) to see its scope here.")
         except Exception as e:
             self.band.set_message(f"Band view problem: {e}")
         self.root.after(100, self.band_tick)
@@ -611,40 +615,32 @@ class App:
         self.radio.tune(dial)
 
     def _band_click(self, hz: float):
-        """Click in the whole-band view. The scope is coarse (~700 Hz per point on
-        20 m), so bring the clicked spot into the middle of the audio (USB/LSB/
-        data) or right onto it (CW), so the signal shows in the detailed view."""
+        """Click in the scope: the radio goes to the clicked frequency, like
+        touching the IC-7300's screen (rounded to suit the span)."""
         st = self._radio_for_click()
         if st is not None:
-            self._tune(R.tune_target(hz, st.mode, snap_digital=False), st)
+            self._tune(R.click_target(hz, st.mode, self.band.span_half()), st)
 
-    def _waterfall_click(self, audio_hz: float):
-        """Click in the detailed waterfall: the radio goes to the frequency under the pointer."""
-        st = self._radio_for_click()
-        if st is None:
-            return
-        rf = R.rf_frequency(st.freq_hz, st.mode, audio_hz, st.cw_pitch)
-        if rf is None:
-            if st.mode.upper().startswith(("AM", "FM", "WFM")):
-                if st.mode.upper().startswith("AM"):
-                    self.status.config(text="In AM the picture below is centred on the station you're tuned to. "
-                                            "To move, click in the band scope above or use the ▲ ▼ arrows.")
-                else:
-                    self.status.config(text=f"In {st.mode} the waterfall below shows the sound, not the band, so it "
-                                            "can't tell where a station is. Click the station in the band scope above.")
-            else:
-                self._tune(None, st)
-            return
-        self._tune(rf, st)
-
-    def _whole_band(self):
+    def _span_click(self, half: int):
+        """A span tick box: set the radio's scope to Center mode with that span."""
         if self.radio is None or not self.radio.has_scope:
-            messagebox.showinfo(APP_NAME, "Connect an Icom radio first.")
+            self.span_var.set("")
+            self.status.config(text="Connect the radio first (Settings > Connect radio) to change the scope span.")
             return
-        self.radio.scope_whole_band()
-        self.status.config(text="Set the radio's scope to centre mode, ±500 kHz, so the whole band is visible.")
+        self.span_var.set(str(half))      # clicking the ticked box again keeps it ticked
+        self._span_pending = (half, time.monotonic())
+        self.radio.set_span(half)
 
-    # -- sound devices ---------------------------------------------------------
+    def _sync_span(self):
+        """Tick the box matching the span the radio's scope is showing."""
+        if self._span_pending and time.monotonic() - self._span_pending[1] < 3:
+            return                         # give the radio a moment to change
+        self._span_pending = None
+        v = self.band.view
+        cur = R.span_of(*v) if v else None
+        want = str(cur) if cur else ""
+        if self.span_var.get() != want:
+            self.span_var.set(want)
 
     def _fill_devices(self):
         self.devices = []
@@ -758,20 +754,17 @@ class App:
                 self._set_tx_meters(st)
                 self._show_tune()
                 self._highlight(st)
-                self.wf.set_dial((st.freq_hz, st.mode, st.cw_pitch))
             else:
                 self.lcd_freq.config(text="--.---.--", fg="#4a5560")
                 self.lcd_mode.config(text="no answer", fg="#ff8787")
                 self.status.config(text=st.message)
                 self._set_meter(None, "")
                 self._set_tx_meters(None)
-                self.wf.set_dial(None)
         else:
             self.lcd_freq.config(text="--.---.--", fg="#4a5560")
             self.lcd_mode.config(text="no radio", fg="#8a96a3")
             self._set_meter(None, "no radio")
             self._set_tx_meters(None)
-            self.wf.set_dial(None)
             self._highlight(None)
         self.root.after(100, self.radio_tick)
 
@@ -900,21 +893,6 @@ class App:
         else:
             alc_bar.set(None); alc_txt.config(text="n/a")
 
-    def wf_tick(self):
-        try:
-            if self.source is None:
-                self.wf.set_message("Not listening. Choose Settings > Start listening.")
-            else:
-                if self.wf.message.startswith("Not listening"):
-                    self.wf.set_message("Listening… waiting for audio")
-                need = self.wf.need_samples(self.source.rate)
-                audio = self.source.ring.tail(need)
-                if len(audio) >= need:
-                    self.wf.add_audio(audio, self.source.rate)
-        except Exception as e:
-            self.status.config(text=f"Waterfall problem: {e}")
-        self.root.after(80, self.wf_tick)
-
     def _radio_state(self):
         if self.radio is None:
             return None
@@ -969,7 +947,8 @@ class App:
         self.last_result = None
         self.start_btn.config(text="Start listening")
         self._show([])
-        self.wf.clear()
+        self.band.set_markers([])
+        self.status.config(text="Not listening. Choose Settings > Start listening.")
 
     def quit(self):
         self.stop()
@@ -1000,12 +979,12 @@ class App:
         self.settings["identify"] = bool(self.identify.get())
         save_settings(self.settings)
         if not self.identify.get():
-            self.wf.set_markers([])     # take the labels off straight away
+            self.band.set_markers([])   # take the labels off straight away
 
     def tick(self):
         try:
             if self.source is not None and not self.identify.get():
-                self.wf.set_markers([])
+                self.band.set_markers([])
             elif self.source is not None:
                 audio = self.source.ring.tail(int(WINDOW_SECONDS * self.source.rate))
                 secs = len(audio) / self.source.rate
@@ -1048,11 +1027,23 @@ class App:
         self.root.after(100, self._collect_analysis)
 
     def _show(self, dets, secs: float = 0):
-        """Label each signal on the waterfall with its mode."""
+        """Label each identified signal on the scope at its frequency."""
         if self.source is None or not dets:
-            self.wf.set_markers([])
+            self.band.set_markers([])
             return
-        self.wf.set_markers([(d.freq_hz, marker_text(d), MODE_INFO.get(d.mode, ("", "white"))[1]) for d in dets])
+        st = self.radio.get() if self.radio is not None else None
+        if st is None or not st.ok or not st.freq_hz:
+            # no radio frequency to place them by: list them in the status line
+            self.band.set_markers([])
+            self.status.config(text="Heard: " + ", ".join(marker_text(d) for d in dets))
+            return
+        marks = []
+        for d in dets:
+            rf = R.rf_frequency(st.freq_hz, st.mode, d.freq_hz, st.cw_pitch)
+            if rf is None:                     # AM / FM: the sound belongs to the station you're on
+                rf = st.freq_hz
+            marks.append((rf, marker_text(d), MODE_INFO.get(d.mode, ("", "white"))[1]))
+        self.band.set_markers(marks)
 
     # -- recording -------------------------------------------------------------------
 

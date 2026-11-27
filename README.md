@@ -4,7 +4,8 @@ Listens to your radio through your computer's sound card and tells you what kind
 of signal you're hearing: **CW, SSB voice, FT8, FT4, RTTY, PSK31, SSTV
 pictures** (with the SSTV mode, e.g. Martin M1), weather fax,
 Winlink-style **ARQ data bursts** (ARDOP, VARA, PACTOR), a steady carrier, or
-just noise. It shows a live waterfall with each signal labelled.
+just noise. It shows the radio's scope (spectrum and waterfall, like the
+IC-7300's screen) with each signal labelled.
 
 ![modes](https://img.shields.io/badge/modes-CW%20%7C%20SSB%20%7C%20FT8%20%7C%20FT4%20%7C%20RTTY%20%7C%20PSK31%20%7C%20SSTV-blue)
 
@@ -55,7 +56,7 @@ by themselves next time.
    settings.
 
 Untick **Settings > Identify signals** to hide the mode labels and just watch
-the waterfall; tick it again to bring them back.
+the scope; tick it again to bring them back.
 
 **Settings > UTC time / Local time** chooses what the clock above the
 frequency shows. Local time comes from the computer's own clock.
@@ -73,14 +74,13 @@ With that you get:
 - an **S-meter** bar next to the audio level
 - **Power, SWR and ALC** meters while you transmit (Icom radios and Hamlib
   rigctld), with a red **TX** lamp. See "Transmit meters" below.
-- the waterfall scale labelled in radio frequencies
-- on Icom radios, a **whole-band view** from the radio's own band scope (see below)
+- on Icom radios, the radio's **scope** (spectrum and waterfall), see below
 
 It only transmits when you press **Tune** (see below), and then the radio
 itself runs its tune just as if you'd held its TUNER button. The only things it ever changes
 on the radio are the frequency and mode, and only when you click a signal (with
 "Click to tune radio" ticked) or press a band or mode button. On Icom radios it
-also switches the band scope on, so it can show the whole band (see
+also switches the radio's scope on and sets its span when you ask (see
 "Keep scope on" below).
 
 **IC-7300, step by step**
@@ -95,7 +95,7 @@ also switches the band scope on, so it can show the whole band (see
 4. Leave **Settings > Speed** at **115200**. On the radio, go to **MENU → SET →
    Connectors → CI-V** and set:
    - **CI-V USB Baud Rate**: **115200**
-   - **CI-V USB Port**: **Unlink from [REMOTE]** (needed for the whole-band view)
+   - **CI-V USB Port**: **Unlink from [REMOTE]** (needed for the scope)
 5. Choose **Settings > Connect radio**. The frequency and mode appear in the
    top right.
    Next time it reconnects automatically.
@@ -104,59 +104,43 @@ Also supported: other Icoms (IC-705, IC-7610, IC-9700, IC-7100, …), Yaesu
 (FT-991A, FT-891, FT-710, FTDX10/101, FT-817/818/857/897), Kenwood and
 Elecraft. Set **Settings > Speed** to match the CAT rate set in your radio's menu.
 
-### Whole-band view (Icom radios)
+### The scope (Icom radios)
 
-The strip above the detailed waterfall shows the whole band from the radio's
-built-in spectrum scope, with coloured hints for where CW, FT8, FT4, RTTY and
-SSB are usually found (US band plan). The dashed box is the slice you're
-listening to, which is what the detailed waterfall shows and what the program
-identifies.
+The big display is the radio's own scope, laid out like the IC-7300's screen:
+the **spectrum** on top (signal strength across the span, with a dotted grid of
+10 divisions) and the **waterfall** below it. The white ▼ and line mark the
+frequency you're on, and the shaded area is what you're hearing (the receive
+passband). The marker turns red while you transmit. Signals the program has
+identified are labelled at their frequency, just above the spectrum.
 
-- **Click** in the band view to bring that spot into the detailed waterfall:
-  in USB/LSB/data modes it lands in the middle of your audio, in CW mode right
-  on your pitch. (The band scope is coarse, about 700 Hz per point on 20 m,
-  so this is the reliable way to get a signal into view.)
-- **Click** in the detailed waterfall and the radio goes to exactly the
-  frequency shown under the pointer.
+- **Span tick boxes** (±2.5k, ±5k, ±10k, ±25k, ±50k, ±100k, ±250k, ±500k), next
+  to the band buttons, set the radio's scope to Center mode with that span,
+  just like its SPAN key. The box for the span the radio is showing is ticked,
+  even if you change it on the radio. In the radio's Fixed mode no box is
+  ticked and the program shows whatever the radio shows.
+- **Click** anywhere in the scope and the radio goes to that frequency, like
+  touching the radio's screen (to the nearest 10 Hz in narrow spans, 100 Hz in
+  medium ones, 1 kHz in the widest; AM to 1 kHz and FM to 5 kHz steps).
 - Untick **Settings > Click to tune radio** if you don't want clicks to tune.
-- **Settings > Show whole band** switches the radio's scope to centre mode, ±500 kHz,
-  which covers any band up to 500 kHz wide. Or set the scope to Fixed mode
-  with the band edges on the radio itself; the program shows whatever the
-  scope shows.
-- The scope only has 475 points across the screen (about 700 Hz each on
-  20 m), so it shows *where* signals are. Identifying the mode still needs
-  them to be in the detailed (audio) view.
-- **NO SIGNAL** appears in the middle of the band view when the radio isn't
+- Signals are identified from what you're hearing, so a signal gets its label
+  once it's inside the shaded passband.
+- **NO SIGNAL** appears in the middle of the scope when the radio isn't
   sending scope data, for example when its scope is switched off or a menu is
   open on the radio's screen.
-- **Settings > Keep scope on** (ticked by default): if the scope data stops, the program
-  asks the radio to switch its scope back on every 5 seconds, so the band view
-  keeps working even if the scope was turned off on the radio. Untick it if
-  you want to switch the radio's scope off yourself and leave it off. While a
-  menu is open on the radio, the radio sends no scope data at all, so the band
-  view shows NO SIGNAL until you close the menu.
+- **Settings > Keep scope on** (ticked by default): if the scope data stops,
+  the program asks the radio to switch its scope back on every 5 seconds.
+  Untick it if you want to switch the radio's scope off yourself and leave it
+  off. While a menu is open on the radio, the radio sends no scope data at
+  all, so the scope shows NO SIGNAL until you close the menu.
 
 **Using WSJT-X at the same time?** Only one program can use the radio's COM
 port at once. To share it, run **flrig** (free), point both WSJT-X and this
 program at it (choose **flrig** in the Radio list), or use **Hamlib rigctld**.
 
-On-air frequencies are worked out for USB, LSB and data modes (USB-D, etc.)
-and for CW. In CW mode the frequency shown is what the radio would display if
-you tuned to that signal (the IC-7300's CW pitch is read automatically; other
-radios assume 600 Hz). In AM or FM mode the audio frequency is shown instead.
-In AM or FM, click a station in the **band scope** (top) to tune right onto it
-(to the nearest 1 kHz in AM, 5 kHz in FM).
-
-**Which way round the detailed waterfall is:** frequency always rises from
-left to right, like the band scope. So the frequency you're tuned to is on the
-**left** in USB (and CW, RTTY-R), on the **right** in LSB (and CW-R, RTTY,
-which on Icom radios is LSB-based), and in the **centre** in AM and FM.
-
-In AM and FM the tuned frequency (the carrier) is marked with a dashed line
-and the scale shows kHz either side of it. The radio only sends the
-demodulated sound over USB in those modes, so the picture is drawn from that
-sound mirrored around the carrier. To move, use the band scope or the ▲ ▼
-arrows.
+Identified signals are placed at their on-air frequency in USB, LSB, data
+modes, CW and RTTY (in CW using the IC-7300's CW pitch, read automatically;
+other radios assume 600 Hz). In AM and FM the label goes on the station you're
+tuned to.
 
 The S-meter uses Icom's published scale for Icom radios and rigctld's
 calibrated reading. For other radios it's approximate.
@@ -225,7 +209,7 @@ With the radio connected:
 
 With the radio connected:
 
-- **Band buttons** (160 … 6) above the band view change band. Each band
+- **Band buttons** (160 … 6) above the scope change band. Each band
   remembers where you last were. The first time, it goes to the FT8 frequency
   if you're in a data mode (USB-D), the CW segment if you're in CW, or the
   phone segment if you're in SSB (LSB below 10 MHz, USB above). Pressing the

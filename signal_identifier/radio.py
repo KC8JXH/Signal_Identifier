@@ -164,20 +164,36 @@ def rf_frequency(dial_hz: float | None, mode: str, audio_hz: float,
 RTTY_MARK = 2125.0
 
 
-def waterfall_layout(mode: str) -> str:
-    """How the detailed (audio) waterfall is laid out, so that frequency always
-    rises from left to right like the band scope:
-      "normal"  - 0 Hz audio on the left (USB, CW, RTTY-R: the dial is at the left)
-      "flipped" - 0 Hz audio on the right (LSB, CW-R, RTTY: the dial is at the right)
-      "centred" - the tuned frequency in the middle (AM, FM)"""
-    m = (mode or "").upper().replace("-", "").replace(" ", "").replace("_", "")
+# The IC-7300's scope spans in Center mode (half-width, Hz): +/-2.5k ... +/-500k.
+SCOPE_SPANS = [2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000]
+
+
+def span_label(half: int) -> str:
+    """2500 -> '±2.5k', 100000 -> '±100k' (as the radio shows it)."""
+    k = half / 1000
+    return f"±{k:g}k"
+
+
+def span_of(lo_hz: float, hi_hz: float) -> int | None:
+    """Which standard span a sweep covers, or None (e.g. the radio's Fixed mode)."""
+    half = (hi_hz - lo_hz) / 2
+    for s in SCOPE_SPANS:
+        if abs(half - s) <= s * 0.03:
+            return s
+    return None
+
+
+def click_target(rf_hz: float, mode: str, half_span: float | None) -> float | None:
+    """Where the radio goes when the scope is clicked: right onto the clicked
+    frequency, like touching the IC-7300's screen. Rounded to suit the span
+    (10 Hz up to +/-10k, 100 Hz up to +/-100k, 1 kHz wider); AM and FM land
+    on their usual channel steps (1 kHz / 5 kHz)."""
+    m = (mode or "").upper().replace("-", "")
     if m.startswith(("AM", "FM", "WFM")):
-        return "centred"
-    lo = rf_frequency(10_000_000, mode, 100.0, 600.0)
-    hi = rf_frequency(10_000_000, mode, 1100.0, 600.0)
-    if lo is not None and hi is not None and hi < lo:
-        return "flipped"
-    return "normal"
+        return tune_target(rf_hz, mode)
+    half = half_span or 100_000
+    step = 10 if half <= 10_000 else 100 if half <= 100_000 else 1000
+    return float(round(rf_hz / step) * step)
 
 
 def tune_target(rf_hz: float, mode: str, snap_digital: bool = False) -> float | None:
@@ -514,11 +530,15 @@ class IcomCIV(SerialProtocol):
         self.scope_enabled = on and ok
         return ok
 
+    def set_span(self, half_hz: int) -> bool:
+        """Scope to Center mode (27 14 00 00) with span +/-half_hz (27 15 00 + span)."""
+        a = self._set(b"\x27\x14\x00\x00")
+        b = self._set(b"\x27\x15\x00" + _bcd_le(int(half_hz)))
+        return a and b
+
     def scope_whole_span(self) -> bool:
         """Centre mode, widest span (+/-500 kHz): covers a whole band around the VFO."""
-        a = self._set(b"\x27\x14\x00\x00")
-        b = self._set(b"\x27\x15\x00" + _bcd_le(500_000))
-        return a and b
+        return self.set_span(500_000)
 
     def latest_scope(self, max_age: float = 2.0) -> ScopeSweep | None:
         with self._cv:
@@ -967,9 +987,11 @@ class RadioPoller:
                         self.state.freq_hz = hz
             except Exception:
                 pass
-        if sc == "whole" and hasattr(self.protocol, "scope_whole_span"):
+        if sc == "whole":
+            sc = ("span", 500_000)
+        if isinstance(sc, tuple) and sc[0] == "span" and hasattr(self.protocol, "set_span"):
             try:
-                if not self.protocol.scope_whole_span():
+                if not self.protocol.set_span(sc[1]):
                     self.scope_message = "The radio didn't accept the scope span change."
             except Exception as e:
                 self.scope_message = f"Band scope problem: {e}"
@@ -1023,8 +1045,12 @@ class RadioPoller:
             self._mode_to = mode
 
     def scope_whole_band(self):
+        self.set_span(500_000)
+
+    def set_span(self, half_hz: int):
+        """Ask the radio's scope for Center mode with span +/-half_hz (in the background)."""
         with self.lock:
-            self._scope_cmd = "whole"
+            self._scope_cmd = ("span", int(half_hz))
 
     def scope(self):
         return self.protocol.latest_scope() if self.has_scope else None

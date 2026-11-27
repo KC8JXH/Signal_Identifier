@@ -596,11 +596,32 @@ def test_rigctld_tune():
 
 
 
-@pytest.mark.parametrize("mode,layout", [
-    ("USB", "normal"), ("USB-D", "normal"), ("CW", "normal"), ("RTTY-R", "normal"),
-    ("LSB", "flipped"), ("LSB-D", "flipped"), ("CW-R", "flipped"), ("RTTY", "flipped"),
-    ("AM", "centred"), ("FM", "centred"), ("", "normal"),
-])
-def test_waterfall_layout(mode, layout):
-    """Frequency always rises left to right in the detailed waterfall."""
-    assert R.waterfall_layout(mode) == layout
+
+
+
+@pytest.mark.parametrize("half,label", [(2500, "±2.5k"), (5000, "±5k"), (25000, "±25k"), (500000, "±500k")])
+def test_span_label(half, label):
+    assert R.span_label(half) == label
+
+
+def test_span_of():
+    assert R.span_of(14_071_500, 14_076_500) == 2_500
+    assert R.span_of(13_574_000, 14_574_000) == 500_000
+    assert R.span_of(14_000_000, 14_350_000) is None          # Fixed mode: band edges
+
+
+def test_click_target():
+    assert R.click_target(14_074_537, "USB-D", 2_500) == 14_074_540
+    assert R.click_target(14_074_537, "USB", 50_000) == 14_074_500
+    assert R.click_target(14_074_537, "LSB", 250_000) == 14_075_000
+    assert R.click_target(7_250_400, "AM", 25_000) == 7_250_000
+    assert R.click_target(29_621_800, "FM", 50_000) == 29_620_000
+
+
+def test_icom_set_span_commands():
+    fs = FakeSerial(ic7300())
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    assert proto.set_span(25_000)
+    assert b"\xfe\xfe\x94\xe0\x27\x14\x00\x00\xfd" in fs.written
+    assert b"\xfe\xfe\x94\xe0\x27\x15\x00" + R._bcd_le(25_000) + b"\xfd" in fs.written
+    proto.close()

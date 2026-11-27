@@ -1,4 +1,4 @@
-"""Custom display widgets: the scrolling audio waterfall and the whole-band view."""
+"""Custom display widgets: the radio-style scope (spectrum + waterfall) and meters."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import tkinter as tk
 
 import numpy as np
 
-from .dsp import decimate
 
 # ---------------------------------------------------------------- meter scale
 
@@ -110,7 +109,7 @@ class ScrollingImage:
         return True
 
 
-# ---------------------------------------------------------------- waterfall
+# ---------------------------------------------------------------- colours
 
 
 def colormap(v: np.ndarray) -> np.ndarray:
@@ -123,259 +122,6 @@ def colormap(v: np.ndarray) -> np.ndarray:
     return (stops[i] * (1 - f) + stops[i + 1] * f).astype(np.uint8)
 
 
-class Waterfall(tk.Canvas):
-    """Scrolling high-resolution waterfall (newest at the top), like a rig's display.
-
-    Uses a 4096-point FFT (~3 Hz per line at 12 kHz), so the individual tones
-    of FT8 and the two tones of RTTY show up as separate lines.
-    """
-
-    AXIS_H = 56
-    NFFT = 4096
-    RANGE_DB = 32.0
-
-    def __init__(self, master, fmax: float, on_click=None, **kw):
-        super().__init__(master, bg="#000014", highlightthickness=0, width=10, height=10, **kw)
-        self.fmax = fmax
-        self.on_click = on_click   # called with the audio frequency (Hz) clicked
-        self.hover = None
-        self.message = ""
-        self.bind("<Button-1>", self._click)
-        self.bind("<Motion>", lambda e: self._set_hover(e.x))
-        self.bind("<Leave>", lambda e: self._set_hover(None))
-        self.buf = None
-        self.img = None
-        self.ref = None
-        self.dial = None      # (dial_hz, mode, pitch) when the radio is connected
-        self.markers = []
-        self.pic = ScrollingImage(self, 0, self.AXIS_H, "wf")
-        self.bind("<Configure>", lambda e: self._resize())
-
-    # -- geometry --------------------------------------------------------------
-
-    def _size(self):
-        return max(100, self.winfo_width()), max(self.AXIS_H + 40, self.winfo_height())
-
-    def _resize(self):
-        w, h = self._size()
-        rows = h - self.AXIS_H
-        if self.buf is None or self.buf.shape[1] != w:
-            self.buf = np.zeros((rows, w, 3), np.uint8)
-            self.buf[:] = colormap(np.zeros(1))[0]
-        elif self.buf.shape[0] != rows:
-            new = np.zeros((rows, w, 3), np.uint8)
-            new[:] = colormap(np.zeros(1))[0]
-            n = min(rows, self.buf.shape[0])
-            new[:n] = self.buf[:n]
-            self.buf = new
-        self._draw_axis()
-        self._render()
-
-    def clear(self):
-        self.buf = None
-        self.markers = []
-        self._resize()
-
-    # -- data ------------------------------------------------------------------
-
-    def set_message(self, text: str):
-        """Show a note across the waterfall (e.g. when not listening)."""
-        if text == self.message and self.find_withtag("msg"):
-            return
-        self.message = text
-        self.delete("msg")
-        if text:
-            w, h = self._size()
-            self.create_text(w / 2, self.AXIS_H + (h - self.AXIS_H) / 2, text=text, fill="#9aa5b1",
-                             font=("Segoe UI", 14), tags="msg")
-
-    def need_samples(self, rate: float) -> int:
-        factor = max(1, int(round(rate / 12000)))
-        return self.NFFT * factor + 256
-
-    def add_audio(self, audio: np.ndarray, rate: float):
-        """Add one new line to the waterfall from the most recent audio."""
-        if self.buf is None:
-            self._resize()
-        x, fs = decimate(audio, rate)
-        if len(x) < self.NFFT:
-            return
-        seg = x[-self.NFFT:] * np.hanning(self.NFFT)
-        p = 10 * np.log10(np.abs(np.fft.rfft(seg)) ** 2 + 1e-20)
-        freqs = np.fft.rfftfreq(self.NFFT, 1 / fs)
-        w = self.buf.shape[1]
-        if self.centred:
-            # AM: both sidebands carry the same audio, so the station looks like
-            # the audio mirrored around its carrier. Draw it that way, centred.
-            # (FM is drawn the same way so the tuned frequency is in the middle.)
-            hw = (w + 1) // 2
-            half = self._row(p, freqs, hw)
-            row = np.concatenate([half[::-1][:w - hw], half])
-        else:
-            row = self._row(p, freqs, w)
-            if self.layout == "flipped":
-                row = row[::-1]          # LSB etc.: frequency still rises to the right
-        # Reference = the background level; follows AGC so the picture stays steady.
-        ref_now = np.percentile(row, 40)
-        self.ref = ref_now if self.ref is None else 0.8 * self.ref + 0.2 * ref_now
-        v = (row - self.ref + 2) / self.RANGE_DB
-        line = colormap(v)
-        self.buf[1:] = self.buf[:-1]      # kept for resizing / redrawing
-        self.buf[0] = line
-        if self.message:
-            self.set_message("")
-        if not self.pic.push(line):
-            self._render()
-
-    def _row(self, p, freqs, width):
-        """Spectrum from 0 Hz to fmax squeezed into `width` pixels (peak per pixel)."""
-        edges = np.linspace(0, self.fmax, width + 1)
-        idx = np.clip(np.searchsorted(freqs, edges[:-1]), 0, len(p) - 1)
-        stop = int(np.searchsorted(freqs, self.fmax)) + 1
-        return np.maximum.reduceat(p[:stop], np.minimum(idx, stop - 1))[:width]
-
-    # -- layout: normal (0 Hz at the left) or centred on an AM carrier -----------
-
-    @property
-    def layout(self) -> str:
-        from .radio import waterfall_layout
-        return waterfall_layout(str(self.dial[1])) if self.dial else "normal"
-
-    @property
-    def centred(self) -> bool:
-        return self.layout == "centred"
-
-    def x_of(self, hz: float) -> float:
-        """Screen x of an audio frequency (centred: of an offset from the carrier)."""
-        w, _ = self._size()
-        lay = self.layout
-        if lay == "centred":
-            return w / 2 + hz / self.fmax * (w / 2)
-        if lay == "flipped":
-            return w - hz / self.fmax * w
-        return hz / self.fmax * w
-
-    def hz_at(self, x: float) -> float:
-        w, _ = self._size()
-        lay = self.layout
-        if lay == "centred":
-            return (x - w / 2) / (w / 2) * self.fmax
-        if lay == "flipped":
-            return (w - x) / w * self.fmax
-        return x / w * self.fmax
-
-    def _render(self):
-        if self.buf is None:
-            return
-        self.pic.load(self.buf)
-
-    # -- scale and labels --------------------------------------------------------
-
-    def set_dial(self, dial):
-        if dial != self.dial:
-            was = self.layout
-            self.dial = dial
-            if self.layout != was and self.buf is not None:
-                self.buf[:] = colormap(np.zeros(1))[0]   # different layout: start the picture afresh
-                self._render()
-            self._draw_axis()
-
-    def _draw_axis(self):
-        from .radio import format_freq, rf_frequency
-        self.delete("axis")
-        w, _ = self._size()
-        self.create_rectangle(0, 0, w, self.AXIS_H, fill="#0b0f14", outline="", tags="axis")
-        self.delete("centre")
-        if self.centred:
-            self._draw_centred_axis(w)
-            self._draw_markers()
-            return
-        step = 100
-        for f in range(0, int(self.fmax) + 1, step):
-            x = self.x_of(f)
-            major = f % 500 == 0
-            self.create_line(x, self.AXIS_H - (9 if major else 4), x, self.AXIS_H,
-                             fill="#9aa" if major else "#566", tags="axis")
-            if not major:
-                continue
-            # keep the end labels fully on screen
-            anchor = "w" if x < 40 else "e" if x > w - 40 else "center"
-            xx = x + 3 if anchor == "w" else x - 3 if anchor == "e" else x
-            rf = rf_frequency(*self.dial[:2], f, self.dial[2]) if self.dial else None
-            if rf:
-                self.create_text(xx, 10, text=format_freq(rf), fill="#e8e8e8", anchor=anchor,
-                                 font=("Consolas", 10, "bold"), tags="axis")
-                self.create_text(xx, 24, text=f"{f} Hz", fill="#7f8c99", anchor=anchor,
-                                 font=("Segoe UI", 8), tags="axis")
-            else:
-                self.create_text(xx, 12, text=f"{f} Hz", fill="#cfd8e0", anchor=anchor,
-                                 font=("Segoe UI", 9), tags="axis")
-        self._draw_markers()
-
-    def _draw_centred_axis(self, w):
-        """AM: the carrier (dial frequency) in the middle, kHz either side."""
-        from .radio import format_freq
-        _, h = self._size()
-        dial = self.dial[0]
-        span = int(self.fmax)
-        for off in range(-span, span + 1, 100):
-            x = self.x_of(off)
-            major = off % 500 == 0
-            self.create_line(x, self.AXIS_H - (9 if major else 4), x, self.AXIS_H,
-                             fill="#9aa" if major else "#566", tags="axis")
-            # label every 0.5 kHz (every 1 kHz on narrow windows), but not the very
-            # ends, where the labels would run into their neighbours
-            if not major or abs(off) == span or (off % 1000 and w < 1100):
-                continue
-            anchor = "w" if x < 40 else "e" if x > w - 40 else "center"
-            xx = x + 3 if anchor == "w" else x - 3 if anchor == "e" else x
-            self.create_text(xx, 10, text=format_freq(dial + off), fill="#e8e8e8", anchor=anchor,
-                             font=("Consolas", 10, "bold"), tags="axis")
-            sub = "carrier" if off == 0 else f"{off / 1000:+.1f} kHz"
-            self.create_text(xx, 24, text=sub, fill="#ffd43b" if off == 0 else "#7f8c99", anchor=anchor,
-                             font=("Segoe UI", 8, "bold" if off == 0 else "normal"), tags="axis")
-        # the carrier: a thin dashed line down the middle of the picture
-        self.create_line(w / 2, self.AXIS_H, w / 2, h, fill="#ffd43b", dash=(3, 5), tags="centre")
-
-    def _set_hover(self, x):
-        self.hover = x
-        self._draw_hover()
-
-    def _draw_hover(self):
-        from .radio import format_freq, rf_frequency
-        self.delete("hover")
-        if self.hover is None:
-            return
-        w, h = self._size()
-        f = self.hz_at(self.hover)
-        if self.centred:
-            text = f"{format_freq(self.dial[0] + f)}  ({f / 1000:+.2f} kHz)"
-        else:
-            rf = rf_frequency(*self.dial[:2], f, self.dial[2]) if self.dial else None
-            text = (format_freq(rf) if rf else f"{f:.0f} Hz") + (" - click to tune" if self.on_click and rf else "")
-        self.create_line(self.hover, self.AXIS_H, self.hover, h, fill="#ffff66", dash=(2, 3), tags="hover")
-        anchor = "w" if self.hover < w - 180 else "e"
-        self.create_text(self.hover + (6 if anchor == "w" else -6), self.AXIS_H + 12, text=text,
-                         fill="#ffff66", anchor=anchor, font=("Segoe UI", 9, "bold"), tags="hover")
-
-    def _click(self, e):
-        if self.on_click is not None:
-            self.on_click(self.hz_at(e.x))
-
-    def set_markers(self, markers):
-        """markers: list of (audio_hz, text, colour)."""
-        self.markers = markers
-        self._draw_markers()
-
-    def _draw_markers(self):
-        self.delete("marker")
-        for f, text, colour in self.markers:
-            x = self.x_of(f)
-            self.create_text(x, self.AXIS_H - 16, text=text, fill=colour,
-                             font=("Segoe UI", 10, "bold"), tags="marker")
-            self.create_line(x, self.AXIS_H - 8, x, self.AXIS_H, fill=colour, width=2, tags="marker")
-
-
 # ---------------------------------------------------------------- whole-band view
 
 
@@ -384,48 +130,57 @@ def _mhz3(hz: float) -> str:
 
 
 class BandScope(tk.Canvas):
-    """Whole-band waterfall from the radio's own band scope (Icom CI-V).
+    """The radio's own scope (Icom CI-V), laid out like the IC-7300's screen:
+    a spectrum (signal strength across the span) on top, the waterfall below.
 
-    Shows band-plan hints along the top, a box around the slice you are
-    listening to, and (optionally) tunes the radio where you click.
+    The receive frequency is marked, with its passband shaded; identified
+    signals are labelled at their frequency; clicking tunes the radio there.
     """
 
-    AXIS_H = 20
-    HINT_H = 16
-    HEIGHT = 170
+    AXIS_H = 18          # frequency scale
+    LABEL_H = 18         # strip for identification labels
+    SPEC_FRAC = 0.36     # share of the scope's height used by the spectrum
+    SCALE_MAX = 160.0    # Icom scope values run 0..160
+    SPEC_BG = "#030b1a"
+    GRID = "#28405e"
 
     def __init__(self, master, on_click=None, **kw):
-        super().__init__(master, bg="#000014", highlightthickness=0, width=10, height=self.HEIGHT, **kw)
+        super().__init__(master, bg="#000014", highlightthickness=0, width=10, height=300, **kw)
         self.on_click = on_click
         self.buf = None
         self.img = None
-        self.pic = ScrollingImage(self, 0, self.AXIS_H + self.HINT_H, "img")
         self.view = None          # (lo_hz, hi_hz) shown across the width
         self.last_sweep = None
         self.state = None         # RadioState
-        self.message = "Connect an Icom radio (like the IC-7300) to see the whole band here."
+        self.message = "Connect the radio (Settings > Connect radio) to see its scope here."
         self.no_signal = False    # radio connected but no scope data arriving
         self.hint = ""            # small text under NO SIGNAL
         self.hover = None
+        self.markers = []         # (rf_hz, text, colour) from the identifier
+        self.pic = ScrollingImage(self, 0, 0, "img")
         self.bind("<Configure>", lambda e: self._reset())
         self.bind("<Button-1>", self._click)
         self.bind("<Motion>", self._motion)
         self.bind("<Leave>", lambda e: self._motion(None))
-        self._reset()
+
+    # -- geometry ------------------------------------------------------------------
+
+    def _size(self):
+        return max(100, self.winfo_width()), max(160, self.winfo_height())
+
+    def _geom(self):
+        w, h = self._size()
+        spec_top = self.AXIS_H + self.LABEL_H
+        spec_h = max(50, int((h - spec_top) * self.SPEC_FRAC))
+        wf_top = spec_top + spec_h + 2
+        return w, h, spec_top, spec_h, wf_top
 
     @property
     def top(self):
-        return self.AXIS_H + self.HINT_H
+        return self._geom()[4]
 
-    def _size(self):
-        return max(100, self.winfo_width()), max(self.top + 20, self.winfo_height())
-
-    def _reset(self):
-        w, h = self._size()
-        self.buf = np.zeros((h - self.top, w, 3), np.uint8)
-        self.buf[:] = colormap(np.zeros(1))[0]
-        self._render()
-        self._overlay()
+    def span_half(self):
+        return (self.view[1] - self.view[0]) / 2 if self.view else None
 
     def x_to_hz(self, x: float) -> float | None:
         if not self.view:
@@ -439,7 +194,16 @@ class BandScope(tk.Canvas):
         lo, hi = self.view
         return (hz - lo) / (hi - lo) * w
 
-    # -- data -------------------------------------------------------------------
+    def _reset(self):
+        w, h, spec_top, spec_h, wf_top = self._geom()
+        self.buf = np.zeros((h - wf_top, w, 3), np.uint8)
+        self.buf[:] = colormap(np.zeros(1))[0]
+        self.pic.y = wf_top
+        self.pic.load(self.buf)
+        self._static()
+        self._overlay()
+
+    # -- data ----------------------------------------------------------------------
 
     def update_scope(self, sweep, state):
         """Called regularly by the window with the newest sweep and radio state."""
@@ -455,28 +219,41 @@ class BandScope(tk.Canvas):
         self.last_sweep = sweep
         self.no_signal = False
         self.hint = ""
-        from .bandplan import band_for
-        band = band_for((sweep.lo_hz + sweep.hi_hz) / 2) or band_for(state.freq_hz if state else None)
-        if band and sweep.lo_hz <= band[0] and sweep.hi_hz >= band[1]:
-            view = (float(band[0]), float(band[1]))   # scope covers the whole band: show just the band
-        else:
-            view = (sweep.lo_hz, sweep.hi_hz)
+        view = (float(sweep.lo_hz), float(sweep.hi_hz))   # exactly what the radio's scope shows
         if view != self.view:
             self.view = view
             self._reset()
-        w = self.buf.shape[1]
+        w, h, spec_top, spec_h, wf_top = self._geom()
         vals = np.asarray(sweep.values, float)
-        cols = self.view[0] + (np.arange(w) + 0.5) / w * (self.view[1] - self.view[0])
-        pos = (cols - sweep.lo_hz) / (sweep.hi_hz - sweep.lo_hz) * (len(vals) - 1)
-        row = np.interp(pos, np.arange(len(vals)), vals, left=0, right=0)
+        pos = (np.arange(w) + 0.5) / w * (len(vals) - 1)
+        row = np.interp(pos, np.arange(len(vals)), vals)
+        # spectrum: filled trace, like the radio
+        bottom = spec_top + spec_h
+        ys = bottom - np.clip(row / self.SCALE_MAX, 0, 1) * (spec_h - 2)
+        step = 2 if w > 900 else 1
+        xs = np.arange(0, w, step)
+        pts = np.empty(2 * len(xs) + 4)
+        pts[0:2] = (0, bottom)
+        pts[2:-2:2] = xs
+        pts[3:-2:2] = ys[::step]
+        pts[-2:] = (w, bottom)
+        self.coords("spec", *pts.tolist())
+        self.coords("specline", *pts[2:-2].tolist())
+        # waterfall: one new line on top
         floor = np.percentile(vals, 25)
         line = colormap((row - floor + 3) / 70.0)
         self.buf[1:] = self.buf[:-1]
         self.buf[0] = line
         self.message = ""
         if not self.pic.push(line):
-            self._render()
+            self.pic.load(self.buf)
         self._overlay()
+
+    def set_markers(self, markers):
+        """markers: list of (rf_hz, text, colour) - identified signals."""
+        if markers != self.markers:
+            self.markers = markers
+            self._overlay()
 
     def set_message(self, text: str):
         if text == self.message and not self.no_signal:
@@ -494,7 +271,7 @@ class BandScope(tk.Canvas):
         self._overlay()
 
     def _draw_no_signal(self, w, h):
-        cx, cy = w / 2, self.top + (h - self.top) / 2 - (8 if self.hint else 0)
+        cx, cy = w / 2, self.AXIS_H + (h - self.AXIS_H) / 2 - (8 if self.hint else 0)
         font = ("Segoe UI", 26, "bold")
         for dx, dy in ((2, 2), (-1, -1), (2, -1), (-1, 2)):   # dark outline so it reads on any colour
             self.create_text(cx + dx, cy + dy, text="NO SIGNAL", fill="#000000", font=font, tags="ov")
@@ -503,17 +280,46 @@ class BandScope(tk.Canvas):
             self.create_text(cx, cy + 30, text=self.hint, fill="#c9d1d9", font=("Segoe UI", 9),
                              width=w - 40, justify="center", tags="ov")
 
-    def _render(self):
-        self.pic.load(self.buf)
+    # -- drawing -------------------------------------------------------------------
 
-    # -- overlay: scale, band plan, listening box ----------------------------
+    def _freq_text(self, hz: float, step: float) -> str:
+        """Scale label: enough decimals to tell the grid lines apart."""
+        mhz = hz / 1e6
+        return f"{mhz:.4f}" if step < 1000 else f"{mhz:.3f}"
+
+    def _static(self):
+        """Spectrum background, grid and frequency scale (redrawn when the span changes)."""
+        self.delete("static")
+        w, h, spec_top, spec_h, wf_top = self._geom()
+        bottom = spec_top + spec_h
+        self.create_rectangle(0, 0, w, spec_top, fill="#0b0f14", outline="", tags="static")
+        self.create_rectangle(0, spec_top, w, bottom + 2, fill=self.SPEC_BG, outline="", tags="static")
+        for k in range(1, 4):                                   # level lines
+            y = spec_top + spec_h * k / 4
+            self.create_line(0, y, w, y, fill=self.GRID, dash=(1, 3), tags="static")
+        if self.view:
+            lo, hi = self.view
+            step = (hi - lo) / 10
+            for k in range(11):                                 # 10 divisions, like the radio
+                x = w * k / 10
+                if 0 < k < 10:
+                    self.create_line(x, spec_top, x, bottom, fill=self.GRID, dash=(1, 3), tags="static")
+                self.create_line(x, self.AXIS_H - 5, x, self.AXIS_H, fill="#9aa", tags="static")
+                if k % 2 == 0 or w > 1100:
+                    anchor = "w" if k == 0 else "e" if k == 10 else "center"
+                    self.create_text(x + (3 if k == 0 else -3 if k == 10 else 0), 8,
+                                     text=self._freq_text(lo + step * k, step), fill="#cfd8e0",
+                                     anchor=anchor, font=("Consolas", 9), tags="static")
+        self.create_polygon(0, bottom, w, bottom, fill="#1864ab", outline="", tags=("static", "spec"))
+        self.create_line(0, bottom, w, bottom, fill="#d0ebff", width=1, tags=("static", "specline"))
+        self.tag_lower("img")
+        self.tag_raise("static")
 
     def _overlay(self):
-        from .bandplan import COLOURS, segments_between
         from .radio import rf_frequency
         self.delete("ov")
-        w, h = self._size()
-        self.create_rectangle(0, 0, w, self.top, fill="#0b0f14", outline="", tags="ov")
+        w, h, spec_top, spec_h, wf_top = self._geom()
+        bottom = spec_top + spec_h
         if not self.view:
             if self.no_signal:
                 self._draw_no_signal(w, h)
@@ -521,49 +327,48 @@ class BandScope(tk.Canvas):
                 self.create_text(w / 2, h / 2, text=self.message, fill="#9aa5b1",
                                  font=("Segoe UI", 11), tags="ov")
             return
-        lo, hi = self.view
-        span = hi - lo
-        step = next(s for s in (1e3, 2e3, 5e3, 10e3, 25e3, 50e3, 100e3, 250e3, 1e6) if span / s <= 14)
-        f = np.ceil(lo / step) * step
-        while f <= hi:
-            x = self.hz_to_x(f)
-            self.create_line(x, self.AXIS_H - 5, x, self.AXIS_H, fill="#9aa", tags="ov")
-            anchor = "w" if x < 30 else "e" if x > w - 30 else "center"
-            self.create_text(x, 9, text=_mhz3(f), fill="#cfd8e0", anchor=anchor,
-                             font=("Consolas", 9), tags="ov")
-            f += step
-        # band-plan hints
-        label_end = -1e9
-        for s_lo, s_hi, label in sorted(segments_between(lo, hi), key=lambda t: t[1] - t[0], reverse=True):
-            x0, x1 = max(0, self.hz_to_x(s_lo)), min(w, self.hz_to_x(s_hi))
-            colour = COLOURS.get(label, "#868e96")
-            self.create_rectangle(x0, self.AXIS_H + 2, x1, self.top - 2, fill=colour, outline="", tags="ov")
-            if x1 - x0 > len(label) * 7:
-                self.create_text((x0 + x1) / 2, self.AXIS_H + self.HINT_H / 2, text=label, fill="white",
-                                 font=("Segoe UI", 8, "bold"), tags="ov")
-            elif label in ("FT8", "FT4") and x0 > label_end:
-                # narrow slot: small label just above the waterfall, without overlapping
-                self.create_text(x0, self.top + 2, text=label, fill="#b2f2bb", anchor="nw",
-                                 font=("Segoe UI", 8, "bold"), tags="ov")
-                label_end = x0 + 26
-        # the slice you're listening to
         st = self.state
+        # receive passband (shaded) and frequency marker
         if st and st.ok and st.freq_hz:
-            a = rf_frequency(st.freq_hz, st.mode, 0, st.cw_pitch)
-            b = rf_frequency(st.freq_hz, st.mode, 3500, st.cw_pitch)
+            m = (st.mode or "").upper()
+            if m.startswith("CW"):
+                a, b = st.freq_hz - 300, st.freq_hz + 300
+            elif m.startswith("AM"):
+                a, b = st.freq_hz - 3000, st.freq_hz + 3000
+            elif m.startswith(("FM", "WFM")):
+                a, b = st.freq_hz - 7500, st.freq_hz + 7500
+            else:
+                a = rf_frequency(st.freq_hz, st.mode, 100, st.cw_pitch)
+                b = rf_frequency(st.freq_hz, st.mode, 2900, st.cw_pitch)
             if a is not None and b is not None:
                 x0, x1 = sorted((self.hz_to_x(a), self.hz_to_x(b)))
                 x1 = max(x1, x0 + 2)
-                self.create_rectangle(x0, self.top, x1, h - 1, outline="#ffffff", width=1,
-                                      dash=(3, 2), tags="ov")
+                self.create_rectangle(x0, spec_top, x1, bottom, fill="#ffffff", stipple="gray25",
+                                      outline="", tags="ov")
             xd = self.hz_to_x(st.freq_hz)
-            self.create_line(xd, self.top, xd, h, fill="#ff4040", width=1, tags="ov")
+            colour = "#ff4040" if st.tx else "#ffffff"
+            self.create_line(xd, spec_top, xd, bottom, fill=colour, width=1, tags="ov")
+            self.create_polygon(xd - 5, spec_top, xd + 5, spec_top, xd, spec_top + 7, fill=colour,
+                                outline="", tags="ov")
+        # identified signals, labelled at their frequency
+        lo, hi = self.view
+        end = -1e9
+        for rf, text, colour in sorted(self.markers):
+            if not lo <= rf <= hi:
+                continue
+            x = self.hz_to_x(rf)
+            self.create_line(x, spec_top - 4, x, spec_top + 4, fill=colour, width=2, tags="ov")
+            if x - 30 > end:                                     # don't pile labels on top of each other
+                self.create_text(x, self.AXIS_H + self.LABEL_H / 2, text=text, fill=colour,
+                                 font=("Segoe UI", 9, "bold"), tags="ov")
+                end = x + len(text) * 3.5
         if self.hover is not None:
             hz = self.x_to_hz(self.hover)
-            self.create_line(self.hover, self.top, self.hover, h, fill="#ffff66", dash=(2, 3), tags="ov")
-            tip = _mhz3(hz) + (" - click to bring into view" if self.on_click else "")
-            anchor = "w" if self.hover < w - 160 else "e"
-            self.create_text(self.hover + (6 if anchor == "w" else -6), self.top + 10, text=tip,
+            self.create_line(self.hover, spec_top, self.hover, h, fill="#ffff66", dash=(2, 3), tags="ov")
+            step = (hi - lo) / 10
+            tip = self._freq_text(hz, step / 10) + " MHz" + (" - click to tune" if self.on_click else "")
+            anchor = "w" if self.hover < w - 190 else "e"
+            self.create_text(self.hover + (6 if anchor == "w" else -6), spec_top + 10, text=tip,
                              fill="#ffff66", anchor=anchor, font=("Segoe UI", 9, "bold"), tags="ov")
         if self.message:
             self.create_text(w / 2, h - 14, text=self.message, fill="#ffa94d", font=("Segoe UI", 9), tags="ov")
