@@ -139,7 +139,7 @@ class BandScope(tk.Canvas):
 
     AXIS_H = 18          # frequency scale
     LABEL_H = 18         # strip for identification labels
-    SPEC_FRAC = 0.36     # share of the scope's height used by the spectrum
+    SPEC_FRAC = 0.18     # share of the scope's height used by the spectrum
     SCALE_MAX = 160.0    # Icom scope values run 0..160
     SPEC_BG = "#030b1a"
     GRID = "#28405e"
@@ -221,13 +221,18 @@ class BandScope(tk.Canvas):
         self.hint = ""
         view = (float(sweep.lo_hz), float(sweep.hi_hz))   # exactly what the radio's scope shows
         if view != self.view:
+            old = self.view
             self.view = view
-            self._reset()
+            if old and abs((old[1] - old[0]) - (view[1] - view[0])) < 1 and self.buf is not None:
+                self._slide(old[0], view[0])   # tuned, same span: slide the picture, like the radio
+            else:
+                self._reset()                  # new span: start the waterfall afresh, like the radio
         w, h, spec_top, spec_h, wf_top = self._geom()
         vals = np.asarray(sweep.values, float)
         pos = (np.arange(w) + 0.5) / w * (len(vals) - 1)
         row = np.interp(pos, np.arange(len(vals)), vals)
-        # spectrum: filled trace, like the radio
+        # spectrum: filled trace on the radio's own fixed scale (0..160), so the
+        # RF gain and the radio's REF level change it just as on the radio
         bottom = spec_top + spec_h
         ys = bottom - np.clip(row / self.SCALE_MAX, 0, 1) * (spec_h - 2)
         step = 2 if w > 900 else 1
@@ -248,6 +253,24 @@ class BandScope(tk.Canvas):
         if not self.pic.push(line):
             self.pic.load(self.buf)
         self._overlay()
+
+    def _slide(self, old_lo: float, new_lo: float):
+        """The radio was tuned but the span is the same: move the waterfall
+        sideways so its history stays lined up with the frequencies."""
+        w = self.buf.shape[1]
+        span = self.view[1] - self.view[0]
+        dx = int(round((new_lo - old_lo) / span * w))
+        bg = colormap(np.zeros(1))[0]
+        if abs(dx) >= w:
+            self.buf[:] = bg
+        elif dx > 0:                        # tuned up: picture moves left
+            self.buf[:, :-dx] = self.buf[:, dx:]
+            self.buf[:, -dx:] = bg
+        elif dx < 0:
+            self.buf[:, -dx:] = self.buf[:, :dx]
+            self.buf[:, :-dx] = bg
+        self.pic.load(self.buf)
+        self._static()
 
     def set_markers(self, markers):
         """markers: list of (rf_hz, text, colour) - identified signals."""
@@ -343,8 +366,9 @@ class BandScope(tk.Canvas):
             if a is not None and b is not None:
                 x0, x1 = sorted((self.hz_to_x(a), self.hz_to_x(b)))
                 x1 = max(x1, x0 + 2)
-                self.create_rectangle(x0, spec_top, x1, bottom, fill="#ffffff", stipple="gray25",
-                                      outline="", tags="ov")
+                self.create_rectangle(x0, spec_top, x1, bottom, fill="#1d3a5f", outline="",
+                                      tags=("ov", "pband"))
+                self.tag_lower("pband", "spec")   # behind the trace, like the radio
             xd = self.hz_to_x(st.freq_hz)
             colour = "#ff4040" if st.tx else "#ffffff"
             self.create_line(xd, spec_top, xd, bottom, fill=colour, width=1, tags="ov")
