@@ -108,3 +108,14 @@ def test_arrows_and_typing_only_widen_when_leaving_the_band(app):
     app._freq_typed(app.freq_entry.get())       # out of 20 m, onto 40 m
     assert app.radio.spans == [500_000]
     assert app._errors == []
+
+
+def test_tune_log_only_saved_for_no_match(app, tmp_path, monkeypatch):
+    saved = []
+    monkeypatch.setattr(app, "_save_tune_log", lambda: saved.append(1) or "")
+    app.radio.tune_swr = None
+    for status in ("done", "failed"):
+        app.radio.tune_status = status
+        app._tune_seen = ""
+        app._show_tune()
+    assert saved == [1]                          # only for "failed"

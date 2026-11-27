@@ -934,6 +934,7 @@ class RadioPoller:
         self._tune_active_at = 0.0
         self._tune_retried = False
         self._tune_polled = 0.0
+        self._tune_last = None
         self.tune_log = []         # (seconds, tuner, transmitting, SWR) during the last tune
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -1104,7 +1105,7 @@ class RadioPoller:
             self.tune_status = "starting"
             self.tune_swr = None
 
-    TUNE_QUIET_LIMIT = 15.0   # s: if the tune is never seen, decide from the tuner after this
+    TUNE_QUIET_LIMIT = 6.0    # s: tuner still "off" and the tune never seen -> no match
     TUNE_TIMEOUT = 30.0
 
     def _watch_tune(self, now: float):
@@ -1124,6 +1125,7 @@ class RadioPoller:
             self._tune_active_at = 0.0
             self._tune_retried = False
             self._tune_polled = 0.0
+            self._tune_last = None
             self.tune_log = [(0.0, "start (tuner on, then tune)", "accepted" if ok else "refused", None)]
             return
         if self.tune_status != "tuning" or now - self._tune_since < 1.0:
@@ -1166,12 +1168,16 @@ class RadioPoller:
                 self.tune_status = "done"
             elif st == "off":
                 self.tune_status = "failed"     # the radio gave up (no match found)
-        elif elapsed > self.TUNE_QUIET_LIMIT:
-            # never saw the tune itself (e.g. a quick tune from the radio's memory)
-            if st == "on":
+        else:
+            # Never caught it tuning: a quick tune (e.g. from the radio's stored
+            # match) can finish within the quiet first second. The IC-7300
+            # switches its tuner off when a tune fails, so "on" at two checks
+            # in a row means it tuned.
+            if st == "on" and self._tune_last == "on":
                 self.tune_status = "done"
-            elif st == "off":
+            elif st == "off" and elapsed > self.TUNE_QUIET_LIMIT:
                 self.tune_status = "failed"
+        self._tune_last = st
         if self.tune_status == "tuning" and elapsed > self.TUNE_TIMEOUT:
             self.tune_status = "failed"
 

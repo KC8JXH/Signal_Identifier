@@ -874,10 +874,11 @@ class App:
             self._tune_shown_at = time.monotonic()
             swr = self.radio.tune_swr
             swr_txt = f" (SWR {swr:.1f})" if swr else ""
+            saved = self._save_tune_log() if status == "failed" else ""   # only for NO MATCH
             self.status.config(text={
                 "done": f"Tuned{swr_txt}. Ready to transmit.",
                 "failed": f"The tuner couldn't find a match{swr_txt}. Check the antenna and that you're on a ham band."
-                          + self._save_tune_log(),
+                          + saved,
                 "refused": "The radio didn't start tuning. Check that its internal tuner is available on this band.",
                 "unsupported": "Tune works with Icom radios (and through Hamlib rigctld).",
             }[status])

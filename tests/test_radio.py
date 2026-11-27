@@ -870,3 +870,24 @@ def test_radio_is_left_alone_during_a_tune():
         assert len(tune_part) <= elapsed * 2 + 1
     finally:
         p.stop()
+
+
+def test_quick_tune_reports_tuned_promptly():
+    """From a real log (14.300 USB): the tune finished inside the quiet first
+    second and the tuner read "on" from then on -> TUNED within ~1.5 s."""
+    import time
+    fs = FakeSerial(ic7300(tx=0, tuner=[1]))
+    proto, sp = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    p = R.RadioPoller(proto, sp, interval=0.05, meter_interval=0.02)
+    try:
+        for _ in range(40):
+            if p.get().ok:
+                break
+            time.sleep(0.05)
+        p.start_tune()
+        t0 = time.monotonic()
+        while p.tune_status not in ("done", "failed") and time.monotonic() - t0 < 5:
+            time.sleep(0.05)
+        assert p.tune_status == "done" and time.monotonic() - t0 < 2.5
+    finally:
+        p.stop()
