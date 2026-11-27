@@ -623,8 +623,12 @@ class App:
         rf = R.rf_frequency(st.freq_hz, st.mode, audio_hz, st.cw_pitch)
         if rf is None:
             if st.mode.upper().startswith(("AM", "FM", "WFM")):
-                self.status.config(text=f"In {st.mode} the waterfall below shows the sound, not the band, so it "
-                                        "can't tell where a station is. Click the station in the band scope above.")
+                if st.mode.upper().startswith("AM"):
+                    self.status.config(text="In AM the picture below is centred on the station you're tuned to. "
+                                            "To move, click in the band scope above or use the ▲ ▼ arrows.")
+                else:
+                    self.status.config(text=f"In {st.mode} the waterfall below shows the sound, not the band, so it "
+                                            "can't tell where a station is. Click the station in the band scope above.")
             else:
                 self._tune(None, st)
             return

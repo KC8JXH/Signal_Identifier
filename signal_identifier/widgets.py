@@ -161,10 +161,14 @@ class Waterfall(tk.Canvas):
         p = 10 * np.log10(np.abs(np.fft.rfft(seg)) ** 2 + 1e-20)
         freqs = np.fft.rfftfreq(self.NFFT, 1 / fs)
         w = self.buf.shape[1]
-        edges = np.linspace(0, self.fmax, w + 1)
-        idx = np.clip(np.searchsorted(freqs, edges[:-1]), 0, len(p) - 1)
-        stop = int(np.searchsorted(freqs, self.fmax)) + 1
-        row = np.maximum.reduceat(p[:stop], np.minimum(idx, stop - 1))[:w]
+        if self.centred:
+            # AM: both sidebands carry the same audio, so the station looks like
+            # the audio mirrored around its carrier. Draw it that way, centred.
+            hw = (w + 1) // 2
+            half = self._row(p, freqs, hw)
+            row = np.concatenate([half[::-1][:w - hw], half])
+        else:
+            row = self._row(p, freqs, w)
         # Reference = the background level; follows AGC so the picture stays steady.
         ref_now = np.percentile(row, 40)
         self.ref = ref_now if self.ref is None else 0.8 * self.ref + 0.2 * ref_now
@@ -175,6 +179,32 @@ class Waterfall(tk.Canvas):
         if self.message:
             self.set_message("")
         self._render()
+
+    def _row(self, p, freqs, width):
+        """Spectrum from 0 Hz to fmax squeezed into `width` pixels (peak per pixel)."""
+        edges = np.linspace(0, self.fmax, width + 1)
+        idx = np.clip(np.searchsorted(freqs, edges[:-1]), 0, len(p) - 1)
+        stop = int(np.searchsorted(freqs, self.fmax)) + 1
+        return np.maximum.reduceat(p[:stop], np.minimum(idx, stop - 1))[:width]
+
+    # -- layout: normal (0 Hz at the left) or centred on an AM carrier -----------
+
+    @property
+    def centred(self) -> bool:
+        return bool(self.dial and str(self.dial[1]).upper().startswith("AM"))
+
+    def x_of(self, hz: float) -> float:
+        """Screen x of an audio frequency (centred: of an offset from the carrier)."""
+        w, _ = self._size()
+        if self.centred:
+            return w / 2 + hz / self.fmax * (w / 2)
+        return hz / self.fmax * w
+
+    def hz_at(self, x: float) -> float:
+        w, _ = self._size()
+        if self.centred:
+            return (x - w / 2) / (w / 2) * self.fmax
+        return x / w * self.fmax
 
     def _render(self):
         if self.buf is None:
@@ -192,7 +222,11 @@ class Waterfall(tk.Canvas):
 
     def set_dial(self, dial):
         if dial != self.dial:
+            was = self.centred
             self.dial = dial
+            if self.centred != was and self.buf is not None:
+                self.buf[:] = colormap(np.zeros(1))[0]   # different layout: start the picture afresh
+                self._render()
             self._draw_axis()
 
     def _draw_axis(self):
@@ -200,6 +234,11 @@ class Waterfall(tk.Canvas):
         self.delete("axis")
         w, _ = self._size()
         self.create_rectangle(0, 0, w, self.AXIS_H, fill="#0b0f14", outline="", tags="axis")
+        self.delete("centre")
+        if self.centred:
+            self._draw_centred_axis(w)
+            self._draw_markers()
+            return
         step = 100
         for f in range(0, int(self.fmax) + 1, step):
             x = f / self.fmax * w
@@ -222,6 +261,33 @@ class Waterfall(tk.Canvas):
                                  font=("Segoe UI", 9), tags="axis")
         self._draw_markers()
 
+    def _draw_centred_axis(self, w):
+        """AM: the carrier (dial frequency) in the middle, kHz either side."""
+        from .radio import format_freq
+        _, h = self._size()
+        dial = self.dial[0]
+        span = int(self.fmax)
+        for off in range(-span, span + 1, 100):
+            x = self.x_of(off)
+            major = off % 500 == 0
+            self.create_line(x, self.AXIS_H - (9 if major else 4), x, self.AXIS_H,
+                             fill="#9aa" if major else "#566", tags="axis")
+            # label every 0.5 kHz (every 1 kHz on narrow windows), but not the very
+            # ends, where the labels would run into their neighbours
+            if not major or abs(off) == span or (off % 1000 and w < 1100):
+                continue
+            anchor = "w" if x < 40 else "e" if x > w - 40 else "center"
+            xx = x + 3 if anchor == "w" else x - 3 if anchor == "e" else x
+            self.create_text(xx, 10, text=format_freq(dial + off), fill="#e8e8e8", anchor=anchor,
+                             font=("Consolas", 10, "bold"), tags="axis")
+            sub = "carrier" if off == 0 else f"{off / 1000:+.1f} kHz"
+            self.create_text(xx, 24, text=sub, fill="#ffd43b" if off == 0 else "#7f8c99", anchor=anchor,
+                             font=("Segoe UI", 8, "bold" if off == 0 else "normal"), tags="axis")
+        self.create_text(w - 6, self.AXIS_H - 20, text="AM: centred on the station", fill="#7f8c99",
+                         anchor="e", font=("Segoe UI", 8), tags="axis")
+        # the carrier: a thin dashed line down the middle of the picture
+        self.create_line(w / 2, self.AXIS_H, w / 2, h, fill="#ffd43b", dash=(3, 5), tags="centre")
+
     def _set_hover(self, x):
         self.hover = x
         self._draw_hover()
@@ -232,9 +298,12 @@ class Waterfall(tk.Canvas):
         if self.hover is None:
             return
         w, h = self._size()
-        f = self.hover / w * self.fmax
-        rf = rf_frequency(*self.dial[:2], f, self.dial[2]) if self.dial else None
-        text = (format_freq(rf) if rf else f"{f:.0f} Hz") + (" - click to tune" if self.on_click and rf else "")
+        f = self.hz_at(self.hover)
+        if self.centred:
+            text = f"{format_freq(self.dial[0] + f)}  ({f / 1000:+.2f} kHz)"
+        else:
+            rf = rf_frequency(*self.dial[:2], f, self.dial[2]) if self.dial else None
+            text = (format_freq(rf) if rf else f"{f:.0f} Hz") + (" - click to tune" if self.on_click and rf else "")
         self.create_line(self.hover, self.AXIS_H, self.hover, h, fill="#ffff66", dash=(2, 3), tags="hover")
         anchor = "w" if self.hover < w - 180 else "e"
         self.create_text(self.hover + (6 if anchor == "w" else -6), self.AXIS_H + 12, text=text,
@@ -242,8 +311,7 @@ class Waterfall(tk.Canvas):
 
     def _click(self, e):
         if self.on_click is not None:
-            w, _ = self._size()
-            self.on_click(e.x / w * self.fmax)
+            self.on_click(self.hz_at(e.x))
 
     def set_markers(self, markers):
         """markers: list of (audio_hz, text, colour)."""
@@ -252,9 +320,8 @@ class Waterfall(tk.Canvas):
 
     def _draw_markers(self):
         self.delete("marker")
-        w, _ = self._size()
         for f, text, colour in self.markers:
-            x = f / self.fmax * w
+            x = self.x_of(f)
             self.create_text(x, self.AXIS_H - 16, text=text, fill=colour,
                              font=("Segoe UI", 10, "bold"), tags="marker")
             self.create_line(x, self.AXIS_H - 8, x, self.AXIS_H, fill=colour, width=2, tags="marker")
