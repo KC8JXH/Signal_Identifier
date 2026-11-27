@@ -209,11 +209,12 @@ With the radio connected:
 
 With the radio connected:
 
-- **Band buttons** (160 … 6) above the scope change band. Each band remembers
+- **Band buttons** (160 … 6, including 11 m for CB) above the scope change band. Each band remembers
   the frequency you were last on (the first time, its phone spot; on 30 m, the
   FT8 spot). Pressing the band you're already on jumps back to that spot.
 - **Every band starts in its default mode**: USB from 30 m up to 6 m, LSB below
-  30 m, except 60 m, which is USB (voice there is USB-only). Going below
+  30 m, except 60 m, which is USB (voice there is USB-only), and 11 m (CB,
+  26.965-27.405 MHz), which is AM and starts on channel 19 (27.185 MHz). Going below
   1.7 MHz (the AM broadcast band) switches to AM, whether you type the
   frequency, click the scope or step with the arrows; moving onto another band
   that way also switches to that band's default. Once you're on a band,

@@ -11,7 +11,8 @@ BANDS = [
     (5_330_000, 5_410_000, "60 m"), (7_000_000, 7_300_000, "40 m"),
     (10_100_000, 10_150_000, "30 m"), (14_000_000, 14_350_000, "20 m"),
     (18_068_000, 18_168_000, "17 m"), (21_000_000, 21_450_000, "15 m"),
-    (24_890_000, 24_990_000, "12 m"), (28_000_000, 29_700_000, "10 m"),
+    (24_890_000, 24_990_000, "12 m"), (26_965_000, 27_405_000, "11 m"),
+    (28_000_000, 29_700_000, "10 m"),
     (50_000_000, 54_000_000, "6 m"),
 ]
 
@@ -77,6 +78,7 @@ BAND_BUTTONS = {
     "17": (18_080_000, 18_100_000, 18_140_000),
     "15": (21_030_000, 21_074_000, 21_300_000),
     "12": (24_900_000, 24_915_000, 24_950_000),
+    "11": (27_185_000, 27_185_000, 27_185_000),   # CB: channel 19
     "10": (28_030_000, 28_074_000, 28_400_000),
     "6": (50_090_000, 50_313_000, 50_125_000),
 }
@@ -89,12 +91,14 @@ def band_button_for(hz: float | None) -> str | None:
 
 def default_mode(hz: float) -> str:
     """The mode a band starts in: USB from 30 m up to 6 m, LSB below 30 m,
-    AM below 1.7 MHz (broadcast band). 60 m is USB: there voice is USB-only
+    AM below 1.7 MHz (broadcast band) and on 11 m (CB). 60 m is USB: there voice is USB-only
     (US channels), whatever the "below 30 m" rule would say."""
     if hz < 1_700_000:
         return "AM"
     if 5_250_000 <= hz <= 5_450_000:
         return "USB"
+    if 26_965_000 <= hz <= 27_405_000:      # 11 m CB: AM
+        return "AM"
     return "USB" if hz >= 10_000_000 else "LSB"
 
 

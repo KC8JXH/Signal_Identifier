@@ -340,6 +340,9 @@ def test_band_buttons():
     assert band_target("30", "LSB") == (10_136_000, "USB")      # no phone on 30 m
     assert band_target("6", "LSB") == (50_125_000, "USB")
     assert band_target("60", "LSB")[1] == "USB"                 # 60 m voice is USB-only
+    assert band_target("11", "USB") == (27_185_000, "AM")       # CB channel 19, AM
+    assert band_button_for(26_965_000) == "11" and band_button_for(27_405_000) == "11"
+    assert band_button_for(27_500_000) is None
     # remembered frequency is kept, mode still resets
     assert band_target("40", "CW", {"40": (7_012_500, "CW")}) == (7_012_500, "LSB")
     assert default_mode(1_000_000) == "AM" and default_mode(1_699_000) == "AM"
@@ -361,6 +364,8 @@ def test_mode_after_move():
     # onto another band: that band's default
     assert mode_after_move(7_200_000, 14_250_000, "LSB") == "USB"
     assert mode_after_move(14_250_000, 7_200_000, "USB") == "LSB"
+    assert mode_after_move(28_400_000, 27_185_000, "USB") == "AM"     # 10 m -> 11 m
+    assert mode_after_move(27_185_000, 28_400_000, "AM") == "USB"     # 11 m -> 10 m
     assert mode_after_move(None, 7_200_000, "USB") is None
 
 
