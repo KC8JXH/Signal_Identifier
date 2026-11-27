@@ -109,6 +109,94 @@ class ScrollingImage:
         return True
 
 
+class AnalogMeter(tk.Canvas):
+    """Needle meter like the radio's: an S-meter on receive that turns into a
+    power meter (watts) while transmitting."""
+
+    W, H = 176, 104
+
+    def __init__(self, master, **kw):
+        super().__init__(master, width=self.W, height=self.H, bg="#0b0f14", highlightthickness=1,
+                         highlightbackground="#2a3340", **kw)
+        self.cx, self.cy, self.r = self.W / 2, self.H - 14, self.H - 30
+        self.kind = None          # "S" or "PO"
+        self.max_w = 100.0
+        self.pos = 0.0
+        self._scale("S")
+        self.needle = self.create_line(self.cx, self.cy, self.cx, self.cy - self.r, fill="#ffa94d", width=2)
+        self.create_oval(self.cx - 4, self.cy - 4, self.cx + 4, self.cy + 4, fill="#ffa94d", outline="")
+        self.readout = self.create_text(self.W - 6, self.H - 6, text="", anchor="se", fill="#e9ecef",
+                                        font=("Consolas", 9, "bold"))
+        self.tx = False
+        self.tx_label = self.create_text(7, 9, text="", anchor="w", fill="#ffffff", font=("Segoe UI", 8, "bold"))
+
+    def _angle(self, frac):
+        """0..1 across the scale -> angle in degrees (150 at the left, 30 at the right)."""
+        import math
+        return math.radians(150 - 120 * max(0.0, min(1.0, frac)))
+
+    def _point(self, frac, r):
+        import math
+        a = self._angle(frac)
+        return self.cx + r * math.cos(a), self.cy - r * math.sin(a)
+
+    def _scale(self, kind, max_w=100.0):
+        if kind == self.kind and max_w == self.max_w:
+            return
+        self.kind, self.max_w = kind, max_w
+        self.delete("scale")
+        r = self.r
+        if kind == "S":
+            # S0..S9 over the first 60 %, then +20 / +40 / +60 dB (red), like meter_fraction()
+            marks = [(meter_fraction((n - 9) * 6), str(n), "#e9ecef") for n in (1, 3, 5, 7, 9)]
+            marks += [(meter_fraction(db), f"+{db}", "#ff6b6b") for db in (20, 40, 60)]
+            red_from = 0.6
+            title = "S"
+        else:
+            marks = [(f, f"{f * max_w:g}", "#e9ecef") for f in (0, 0.25, 0.5, 0.75, 1.0)]
+            red_from = None
+            title = "Po W"
+        steps = 40
+        for k in range(steps):                                   # the arc
+            f0, f1 = k / steps, (k + 1) / steps
+            colour = "#ff6b6b" if red_from is not None and f0 >= red_from else "#adb5bd"
+            self.create_line(*self._point(f0, r), *self._point(f1, r), fill=colour, width=2, tags="scale")
+        for f, label, colour in marks:
+            self.create_line(*self._point(f, r - 6), *self._point(f, r + 2), fill=colour, width=2, tags="scale")
+            x, y = self._point(f, r + 11)
+            self.create_text(x, y, text=label, fill=colour, font=("Segoe UI", 7, "bold"), tags="scale")
+        self.create_text(8, self.H - 6, text=title, anchor="sw", fill="#39c5ff",
+                         font=("Segoe UI", 8, "bold"), tags="scale")
+        self.tag_lower("scale")
+
+    def _set_tx(self, on: bool):
+        """Transmitting: the whole meter turns red (red frame and face, TX label)."""
+        if on == self.tx:
+            return
+        self.tx = on
+        self.config(bg="#3a0d0d" if on else "#0b0f14",
+                    highlightbackground="#ff3b3b" if on else "#2a3340", highlightthickness=3 if on else 1)
+        self.itemconfig(self.tx_label, text="TX" if on else "")
+
+    def set_s(self, db, text):
+        """Receive: S-meter (dB relative to S9), e.g. text 'S7'."""
+        self._set_tx(False)
+        self._scale("S")
+        self._move(meter_fraction(db) if db is not None else 0.0, text or "")
+
+    def set_power(self, watts, max_w, text):
+        """Transmit: output power in watts (and the meter turns red)."""
+        self._set_tx(True)
+        self._scale("PO", float(max_w or 100))
+        self._move((watts or 0.0) / (max_w or 100), text or "")
+
+    def _move(self, goal, text):
+        goal = max(0.0, min(1.0, goal))
+        self.pos += (goal - self.pos) * (0.6 if goal > self.pos else 0.25)   # needle ballistics
+        self.coords(self.needle, self.cx, self.cy, *self._point(self.pos, self.r - 4))
+        self.itemconfig(self.readout, text=text)
+
+
 # ---------------------------------------------------------------- colours
 
 

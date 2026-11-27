@@ -66,6 +66,8 @@ class RadioState:
     power_w: float | None = None     # transmit meters, only while transmitting
     swr: float | None = None
     alc: float | None = None         # percent of the ALC zone (over 100 = too much drive)
+    amps: float | None = None        # PA drain current (Id), while transmitting
+    filter: int | None = None        # receive filter 1, 2 or 3 (FIL1-3), when the radio says
     max_power: float = 100.0         # full scale of the power meter, W
 
     def freq_text(self) -> str:
@@ -297,6 +299,12 @@ class SerialProtocol:
         """(power in W, SWR, ALC in % of zone) while transmitting."""
         return None, None, None
 
+    def read_amps(self) -> float | None:
+        """PA drain current (Id) in amps while transmitting, or None."""
+        return None
+
+    last_filter = None   # FIL1-3 as last read by read(), on radios that report it
+
     # Antenna tuner: start_tune() returns True if the radio accepted it;
     # read_tuner() gives "tuning", "on" (tuned, tuner in line), "off" or None.
     can_tune = False
@@ -319,6 +327,11 @@ def icom_power_w(raw: int, max_w: float) -> float:
 def icom_swr(raw: int) -> float:
     """SWR meter 0-255: 0 = 1.0, 48 = 1.5, 80 = 2.0, 120 = 3.0."""
     return _interp(raw, [(0, 1.0), (48, 1.5), (80, 2.0), (120, 3.0), (155, 4.0), (255, 10.0)])
+
+
+def icom_amps(raw: int) -> float:
+    """Id meter 0-255: 0 = 0 A, 97 = 10 A, 146 = 15 A, 241 = 25 A."""
+    return _interp(raw, [(0, 0.0), (97, 10.0), (146, 15.0), (241, 25.0), (255, 26.5)])
 
 
 def icom_alc(raw: int) -> float:
@@ -437,12 +450,30 @@ class IcomCIV(SerialProtocol):
         freq = _bcd_le_to_int(data[:5]) if data and len(data) >= 4 else None
         mdata = self._query(0x04)
         mode = self.MODES.get(mdata[0], f"mode {mdata[0]:02X}") if mdata else ""
+        self.last_filter = mdata[1] if mdata and len(mdata) > 1 and mdata[1] in (1, 2, 3) else None
         if mode in ("USB", "LSB"):
             # Data mode (USB-D) on newer Icoms; ignored if the radio doesn't support it.
             d = self._query(0x1A, 0x06, timeout=0.3)
             if d and d[0] != 0:
                 mode += "-D"
+                if len(d) > 1 and d[1] in (1, 2, 3):
+                    self.last_filter = d[1]     # data mode has its own filter setting
         return freq, mode
+
+    def set_filter(self, n: int, mode: str) -> bool:
+        """FIL1-3 for the current mode (06 mode filter; in data mode 1A 06 01 filter)."""
+        data = mode.endswith("-D")
+        base = mode[:-2] if data else mode
+        code = self.ICOM_SET.get(base)
+        if code is None or n not in (1, 2, 3):
+            return False
+        if data:
+            return self._set(b"\x1a\x06\x01" + bytes([n]))
+        return self._set(bytes([0x06, code, n]))
+
+    def read_amps(self):
+        v = self._meter(0x16)
+        return None if v is None else icom_amps(v)
 
     def read_smeter(self):
         d = self._query(0x15, 0x02, timeout=0.2)
@@ -810,6 +841,9 @@ class Rigctld:
         tx = self.read_tx()                    # Hamlib has no tuner status: tuning while it transmits
         return None if tx is None else ("tuning" if tx else "on")
 
+    def read_amps(self):
+        return self._number("l ID_METER")
+
     def read_tx_meters(self):
         alc = self._number("l ALC")             # Hamlib: 0.0-1.0
         return (self._number("l RFPOWER_METER_WATTS"), self._number("l SWR"),
@@ -873,6 +907,7 @@ class RadioPoller:
         self._tune_to = None
         self._mode_to = None
         self._mode_check = None    # (mode, time, retries left): make sure the radio kept it
+        self._filter_to = None
         self._scope_cmd = None
         self.scope_message = ""
         self.has_scope = hasattr(protocol, "latest_scope")
@@ -929,7 +964,8 @@ class RadioPoller:
                                 pass
                         with self.lock:
                             self.state = replace(self.state, freq_hz=freq, mode=mode, ok=True,
-                                                 message="", cw_pitch=pitch)
+                                                 message="", cw_pitch=pitch,
+                                                 filter=getattr(self.protocol, "last_filter", None))
                         self._recheck_mode(mode)
                     else:
                         fails += 1
@@ -951,12 +987,16 @@ class RadioPoller:
                     po, swr, alc = self.protocol.read_tx_meters()
                 except Exception:
                     po = swr = alc = None
+                try:
+                    amps = self.protocol.read_amps() if hasattr(self.protocol, "read_amps") else None
+                except Exception:
+                    amps = None
                 with self.lock:
-                    self.state = replace(self.state, tx=True, power_w=po, swr=swr, alc=alc,
+                    self.state = replace(self.state, tx=True, power_w=po, swr=swr, alc=alc, amps=amps,
                                          max_power=getattr(self.protocol, "max_power", 100.0))
             elif meter_ok and self.state.ok:
                 with self.lock:
-                    self.state = replace(self.state, tx=tx, power_w=None, swr=None, alc=None)
+                    self.state = replace(self.state, tx=tx, power_w=None, swr=None, alc=None, amps=None)
                 try:
                     db = self.protocol.read_smeter()
                     with self.lock:
@@ -994,6 +1034,14 @@ class RadioPoller:
             hz, self._tune_to = self._tune_to, None
             md, self._mode_to = self._mode_to, None
             sc, self._scope_cmd = self._scope_cmd, None
+            fl, self._filter_to = self._filter_to, None
+        if fl and hasattr(self.protocol, "set_filter"):
+            try:
+                if self.protocol.set_filter(fl, self.state.mode):
+                    with self.lock:
+                        self.state.filter = fl
+            except Exception:
+                pass
         # Frequency first, then mode: landing on another band makes the radio
         # recall that band's last mode (band stacking), which would otherwise
         # overwrite the mode we just set.
@@ -1075,6 +1123,11 @@ class RadioPoller:
         """Ask the radio to move to `hz` (done in the background)."""
         with self.lock:
             self._tune_to = float(round(hz / 10) * 10)
+
+    def set_filter(self, n: int):
+        """Ask the radio for receive filter FIL1-3 (done in the background)."""
+        with self.lock:
+            self._filter_to = int(n)
 
     def set_mode(self, mode: str):
         """Ask the radio to change mode (done in the background)."""

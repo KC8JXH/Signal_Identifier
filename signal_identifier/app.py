@@ -15,7 +15,7 @@ from . import radio as R
 from .classify import analyze
 from .bandplan import BAND_BUTTONS, band_button_for, band_target, mode_after_move
 from .recorder import Recorder, elapsed_text
-from .widgets import BandScope, MeterBar, meter_fraction, swr_fraction
+from .widgets import AnalogMeter, BandScope, MeterBar, meter_fraction, swr_fraction
 
 MODE_BUTTONS = ["LSB", "USB", "CW", "RTTY", "AM", "FM", "DATA"]
 APP_NAME = "IC7300 Rig Interface"
@@ -360,6 +360,25 @@ class App:
         self._tune_seen = ""          # last tune result already reported
         self._tune_shown_at = 0.0
 
+        # -- analog meter (S-meter on receive, power on transmit), left of the modes
+        self.ameter = AnalogMeter(header)
+        self.ameter.pack(side="right", anchor="n", padx=(6, 8), pady=8)
+        self.show_ameter = tk.BooleanVar(value=self.settings.get("analog_meter", True))
+
+        # -- receive filter FIL1-3, in the space between the bars and the meter
+        fil = tk.Frame(header)
+        fil.pack(side="right", anchor="n", pady=8)
+        self.fil_frame = fil
+        if not self.show_ameter.get():
+            self.ameter.pack_forget()
+        self.filter_btns = {}
+        for n in (1, 2, 3):
+            b = tk.Button(fil, text=f"FIL{n}", width=5, relief="raised", bg=BTN_BG,
+                          font=("Segoe UI", 8, "bold"), padx=0, pady=0,
+                          command=lambda n=n: self._filter_click(n))
+            b.pack(pady=1)
+            self.filter_btns[n] = b
+
         controls = tk.Frame(header)
         controls.pack(side="left", fill="x", expand=True)
 
@@ -395,6 +414,7 @@ class App:
         sm.add_checkbutton(label="Click to tune radio", variable=self.click_tune, command=self._save_click_tune)
         self.keep_scope = tk.BooleanVar(value=self.settings.get("keep_scope_on", True))
         sm.add_checkbutton(label="Keep scope on", variable=self.keep_scope, command=self._save_keep_scope)
+        sm.add_checkbutton(label="Analog meter", variable=self.show_ameter, command=self._save_ameter)
         sm.add_separator()
         sm.add_radiobutton(label="UTC time", variable=self.clock_mode, value="utc", command=self._save_clock)
         sm.add_radiobutton(label="Local time (computer clock)", variable=self.clock_mode, value="local",
@@ -404,30 +424,28 @@ class App:
         lvl = ttk.Frame(controls, padding=(8, 2, 8, 6))
         lvl.pack(fill="x")
         ttk.Label(lvl, text="Audio level:", width=12).pack(side="left")
-        self.level = ttk.Progressbar(lvl, length=180, maximum=100)
+        self.level = ttk.Progressbar(lvl, length=110, maximum=100)
         self.level.pack(side="left", padx=6)
-        self.level_text = ttk.Label(lvl, text="", width=22)
+        self.level_text = ttk.Label(lvl, text="", width=14)
         self.level_text.pack(side="left")
-        ttk.Label(lvl, text="S-meter:").pack(side="left", padx=(12, 0))
-        self.smeter = ttk.Progressbar(lvl, length=180, maximum=100)
+        ttk.Label(lvl, text="S-meter:").pack(side="left", padx=(8, 0))
+        self.smeter = ttk.Progressbar(lvl, length=110, maximum=100)
         self.smeter.pack(side="left", padx=6)
-        self.smeter_text = ttk.Label(lvl, text="", width=12)
+        self.smeter_text = ttk.Label(lvl, text="", width=9)
         self.smeter_text.pack(side="left")
 
         # -- row 5: transmit meters (read from the radio while it transmits)
         txr = ttk.Frame(controls, padding=(8, 0, 8, 6))
         txr.pack(fill="x")
-        ttk.Label(txr, text="Transmit:", width=12).pack(side="left")
-        self.tx_lamp = tk.Label(txr, text=" RX ", font=("Segoe UI", 8, "bold"), bg="#dee2e6", fg="#495057",
-                                padx=4)
-        self.tx_lamp.pack(side="left", padx=(6, 10))
         self.tx_meters = {}
-        for key, label, zone in (("po", "Power", None), ("swr", "SWR", 0.5), ("alc", "ALC", 2 / 3)):
+        # Po / SWR / ALC / Id (PA drain current), read from the radio while transmitting
+        for key, label, zone in (("po", "Po", None), ("swr", "SWR", 0.5), ("alc", "ALC", 2 / 3),
+                                 ("id", "Id", 0.8)):
             ttk.Label(txr, text=label + ":").pack(side="left")
-            bar = MeterBar(txr, width=120, zone_from=zone)
-            bar.pack(side="left", padx=4)
-            txt = ttk.Label(txr, text="", width=8)
-            txt.pack(side="left", padx=(0, 8))
+            bar = MeterBar(txr, width=56, zone_from=zone)
+            bar.pack(side="left", padx=3)
+            txt = ttk.Label(txr, text="", width=6)
+            txt.pack(side="left", padx=(0, 2))
             self.tx_meters[key] = (bar, txt)
 
         # -- whole-band view
@@ -795,6 +813,9 @@ class App:
                 or (m == "DATA" and (cur_mode.endswith("-D") or cur_mode in ("DATA-U", "DATA-L", "PKTUSB",
                                                                              "PKTLSB", "DIG")))
             b.config(bg=BTN_ON if on else BTN_BG)
+        cur_fil = st.filter if st else None
+        for n, b in self.filter_btns.items():
+            b.config(bg=BTN_ON if n == cur_fil else BTN_BG)
         cur_band = band_button_for(st.freq_hz) if st else None
         for n, b in self.band_btns.items():
             b.config(bg=BTN_ON if n == cur_band else BTN_BG)
@@ -841,6 +862,23 @@ class App:
         text, bg, fg = self.TUNE_LOOK.get(status, ("TUNE", BTN_BG, "#c92a2a"))
         self.tune_btn.config(text=text, bg=bg, fg=fg, activebackground=bg)
 
+    def _save_ameter(self):
+        """Settings > Analog meter: show or hide the needle meter."""
+        on = bool(self.show_ameter.get())
+        self.settings["analog_meter"] = on
+        save_settings(self.settings)
+        if on:
+            # back in its place: left of the mode buttons, right of the filter buttons
+            self.ameter.pack(side="right", anchor="n", padx=(6, 8), pady=8, before=self.fil_frame)
+        else:
+            self.ameter.pack_forget()
+
+    def _filter_click(self, n: int):
+        if self.radio is None:
+            self.status.config(text="Connect the radio first to change the filter.")
+            return
+        self.radio.set_filter(n)
+
     def _mode_click(self, mode: str):
         if self.radio is None:
             self.status.config(text="Connect the radio first to change mode.")
@@ -885,19 +923,22 @@ class App:
         self.meter_pos += (goal - self.meter_pos) * (0.6 if goal > self.meter_pos else 0.2)
         self.smeter["value"] = self.meter_pos
         self.smeter_text.config(text=R.s_units_text(db) if db is not None else note)
+        st = self.radio.get() if self.radio is not None else None
+        if not (st and st.tx):
+            self.ameter.set_s(db, R.s_units_text(db) if db is not None else "")
 
     def _set_tx_meters(self, st):
         """Power / SWR / ALC row. The meters only move while the radio transmits."""
         tx = bool(st and st.tx)
-        if st is None or st.tx is None:
-            self.tx_lamp.config(text=" -- ", bg="#dee2e6", fg="#868e96")
-        else:
-            self.tx_lamp.config(text=" TX " if tx else " RX ", bg="#e03131" if tx else "#dee2e6",
-                                fg="#ffffff" if tx else "#495057")
         green, amber, red = "#37b24d", "#f59f00", "#e03131"
         po_bar, po_txt = self.tx_meters["po"]
         swr_bar, swr_txt = self.tx_meters["swr"]
         alc_bar, alc_txt = self.tx_meters["alc"]
+        id_bar, id_txt = self.tx_meters["id"]
+        if tx:
+            # the analog meter becomes a power meter while transmitting
+            w = st.power_w
+            self.ameter.set_power(w, st.max_power, (f"{w:.1f} W" if w < 10 else f"{w:.0f} W") if w is not None else "")
         if not tx:
             for bar, txt in self.tx_meters.values():
                 bar.set(None)
@@ -921,6 +962,12 @@ class App:
             alc_txt.config(text="OVER" if st.alc > 100 else f"{st.alc:.0f} %")
         else:
             alc_bar.set(None); alc_txt.config(text="n/a")
+        if st.amps is not None:
+            # IC-7300 draws about 21 A at 100 W; the shaded part starts at 20 of 25 A
+            id_bar.set(st.amps / 25.0, red if st.amps > 22 else "#1c7ed6")
+            id_txt.config(text=f"{st.amps:.1f} A")
+        else:
+            id_bar.set(None); id_txt.config(text="n/a")
 
     def _radio_state(self):
         if self.radio is None:

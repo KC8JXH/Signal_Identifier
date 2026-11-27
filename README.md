@@ -145,23 +145,32 @@ tuned to.
 The S-meter uses Icom's published scale for Icom radios and rigctld's
 calibrated reading. For other radios it's approximate.
 
-### Transmit meters
+### Meters and filters
 
-When you transmit, for example from WSJT-X, the **Transmit** row shows what the
-radio's own meters read:
+- **Analog meter** (left of the mode buttons): a needle S-meter on receive
+  (S1 … S9, +20 … +60 dB in red). While you transmit it turns red and becomes a
+  power meter in watts (full scale 100 W, or 10 W for the IC-705 and IC-905).
+  Hide or show it with **Settings > Analog meter**.
+- **FIL1 / FIL2 / FIL3** choose the radio's receive filter for the mode you're
+  in; the one in use lights up, also when you change it on the radio. (USB-D
+  and LSB-D have their own filter setting on the IC-7300, as on the radio.)
+- **Transmit bars**, under the S-meter, show the radio's own meters while it
+  transmits:
+  - **Po**: output power in watts.
+  - **SWR**: turns amber at 1.5 and red at 2.0. The shaded part is above 2:1.
+  - **ALC**: 0–100 % is inside the radio's ALC zone. **OVER** means you're
+    overdriving: turn down the USB MOD level on the radio, or the power/audio
+    slider in your digital-mode program, until ALC stays in the zone (for
+    FT8, ideally close to zero).
+  - **Id**: the power amplifier's current in amps (about 21 A at 100 W on an
+    IC-7300).
+- The IC-7300 has no temperature reading (not on its own screen, nor over
+  CI-V), so there's no temperature meter.
 
-- **Power**: output in watts. Full scale is 100 W, or 10 W for the IC-705 and IC-905.
-- **SWR**: turns amber at 1.5 and red at 2.0. The shaded part of the bar is above 2:1.
-- **ALC**: 0–100 % is inside the radio's ALC zone. If it shows **OVER**, you're
-  overdriving. Turn down the USB MOD level on the radio, or the power/audio
-  slider in your digital-mode program, until ALC stays in the zone (for FT8,
-  ideally close to zero).
-
-The white tick on each bar holds the peak for a moment. On receive the meters
-go dark and the lamp shows **RX**. These meters work on Icom radios and through
-Hamlib rigctld. For other radios the row shows "n/a". The Icom scales follow
-Icom's published CI-V figures, so it's worth comparing them once with the
-radio's own meter.
+The white tick on each bar holds the peak for a moment. These meters work on
+Icom radios and through Hamlib rigctld; for other radios they show "n/a". The
+Icom scales follow Icom's published CI-V figures, so it's worth comparing them
+once with the radio's own meters.
 
 ## Recording
 

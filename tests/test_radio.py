@@ -717,3 +717,39 @@ def test_icom_set_span_commands():
     assert b"\xfe\xfe\x94\xe0\x27\x14\x00\x00\xfd" in fs.written
     assert b"\xfe\xfe\x94\xe0\x27\x15\x00" + R._bcd_le(25_000) + b"\xfd" in fs.written
     proto.close()
+
+
+# ------------------------------------------------------------------ filters and Id
+
+def test_icom_reads_filter():
+    def radio(mode, flt, data, dflt):
+        base = ic7300(mode=mode, data=data)
+
+        def respond(cmd):
+            if cmd[4] == 0x04:
+                return cmd + b"\xfe\xfe\xe0\x94\x04" + bytes([mode, flt]) + b"\xfd"
+            if cmd[4] == 0x1A and cmd[5] == 0x06 and len(cmd) == 7:
+                return cmd + b"\xfe\xfe\xe0\x94\x1a\x06" + bytes([data, dflt]) + b"\xfd"
+            return base(cmd)
+        return respond
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: FakeSerial(radio(0x01, 2, 0, 0)))
+    assert proto.read() == (14074000, "USB") and proto.last_filter == 2
+    # data mode has its own filter setting
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: FakeSerial(radio(0x01, 2, 1, 3)))
+    assert proto.read() == (14074000, "USB-D") and proto.last_filter == 3
+
+
+def test_icom_set_filter_commands():
+    fs = FakeSerial(ic7300())
+    proto, _ = R.make_protocol("Icom IC-7300", "COM3", serial_factory=lambda n, b: fs)
+    fs.written.clear()
+    proto.set_filter(2, "LSB")
+    assert fs.written[-1] == b"\xfe\xfe\x94\xe0\x06\x00\x02\xfd"          # 06 mode=LSB filter=2
+    proto.set_filter(3, "USB-D")
+    assert fs.written[-1] == b"\xfe\xfe\x94\xe0\x1a\x06\x01\x03\xfd"      # data on, filter 3
+    assert proto.set_filter(4, "USB") is False
+
+
+def test_icom_amps_scale():
+    assert R.icom_amps(0) == 0 and abs(R.icom_amps(97) - 10) < 0.01
+    assert abs(R.icom_amps(146) - 15) < 0.01 and abs(R.icom_amps(241) - 25) < 0.01
