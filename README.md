@@ -133,6 +133,9 @@ On-air frequencies are worked out for USB, LSB and data modes (USB-D, etc.)
 and for CW. In CW mode the frequency shown is what the radio would display if
 you tuned to that signal (the IC-7300's CW pitch is read automatically; other
 radios assume 600 Hz). In AM or FM mode the audio frequency is shown instead.
+In AM or FM, click a station in the **band scope** (top) to tune right onto it
+(to the nearest 1 kHz in AM, 5 kHz in FM). The detailed waterfall shows the
+sound in those modes, not the band, so clicking there doesn't tune.
 
 The S-meter uses Icom's published scale for Icom radios and rigctld's
 calibrated reading. For other radios it's approximate.

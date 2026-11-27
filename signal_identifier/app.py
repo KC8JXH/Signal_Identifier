@@ -546,7 +546,11 @@ class App:
             return
         rf = R.rf_frequency(st.freq_hz, st.mode, audio_hz, st.cw_pitch)
         if rf is None:
-            self._tune(None, st)
+            if st.mode.upper().startswith(("AM", "FM", "WFM")):
+                self.status.config(text=f"In {st.mode} the waterfall below shows the sound, not the band, so it "
+                                        "can't tell where a station is. Click the station in the band scope above.")
+            else:
+                self._tune(None, st)
             return
         self._tune(rf, st)
 

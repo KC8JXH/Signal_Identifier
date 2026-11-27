@@ -281,7 +281,11 @@ def test_tune_targets():
     assert R.tune_target(7_150_000, "LSB") == 7_151_500
     assert R.tune_target(7_030_100, "CW") == 7_030_100
     assert R.tune_target(14_085_000, "RTTY") == 14_085_000
-    assert R.tune_target(7_200_000, "AM") is None
+    # AM / FM: straight onto the station, on the usual channel step
+    assert R.tune_target(7_200_400, "AM") == 7_200_000
+    assert R.tune_target(29_601_700, "FM") == 29_600_000
+    assert R.tune_target(146_523_000, "FM") == 146_525_000
+    assert R.tune_target(14_074_000, "DV") is None
 
 
 def test_waterfall_click_round_trip():

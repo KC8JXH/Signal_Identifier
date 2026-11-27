@@ -169,10 +169,15 @@ def tune_target(rf_hz: float, mode: str, snap_digital: bool = False) -> float | 
     CW and RTTY right on frequency (your CW pitch / the mark tone), sideband
     and data modes in the middle of the audio (1500 Hz). With `snap_digital`,
     a click inside a standard FT8/FT4 slot tunes to that slot's dial frequency.
-    Returns None for modes where this doesn't make sense (AM, FM)."""
+    AM and FM tune right onto the station, rounded to the usual channel step
+    (1 kHz for AM, 5 kHz for FM). Returns None for modes it doesn't know."""
     m = mode.upper().replace("-", "").replace(" ", "").replace("_", "")
     if m.startswith(("CW", "RTTY", "FSK")):
         return rf_hz
+    if m.startswith("AM"):
+        return float(round(rf_hz / 1000) * 1000)
+    if m.startswith(("FM", "WFM")):
+        return float(round(rf_hz / 5000) * 5000)
     lower = m.startswith(("LSB", "DATAL", "PKTLSB"))
     upper = m.startswith(("USB", "DATAU", "PKTUSB", "DIG", "DATA", "PSK", "PKT"))
     if not (lower or upper):
