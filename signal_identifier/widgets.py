@@ -164,11 +164,14 @@ class Waterfall(tk.Canvas):
         if self.centred:
             # AM: both sidebands carry the same audio, so the station looks like
             # the audio mirrored around its carrier. Draw it that way, centred.
+            # (FM is drawn the same way so the tuned frequency is in the middle.)
             hw = (w + 1) // 2
             half = self._row(p, freqs, hw)
             row = np.concatenate([half[::-1][:w - hw], half])
         else:
             row = self._row(p, freqs, w)
+            if self.layout == "flipped":
+                row = row[::-1]          # LSB etc.: frequency still rises to the right
         # Reference = the background level; follows AGC so the picture stays steady.
         ref_now = np.percentile(row, 40)
         self.ref = ref_now if self.ref is None else 0.8 * self.ref + 0.2 * ref_now
@@ -190,20 +193,31 @@ class Waterfall(tk.Canvas):
     # -- layout: normal (0 Hz at the left) or centred on an AM carrier -----------
 
     @property
+    def layout(self) -> str:
+        from .radio import waterfall_layout
+        return waterfall_layout(str(self.dial[1])) if self.dial else "normal"
+
+    @property
     def centred(self) -> bool:
-        return bool(self.dial and str(self.dial[1]).upper().startswith("AM"))
+        return self.layout == "centred"
 
     def x_of(self, hz: float) -> float:
         """Screen x of an audio frequency (centred: of an offset from the carrier)."""
         w, _ = self._size()
-        if self.centred:
+        lay = self.layout
+        if lay == "centred":
             return w / 2 + hz / self.fmax * (w / 2)
+        if lay == "flipped":
+            return w - hz / self.fmax * w
         return hz / self.fmax * w
 
     def hz_at(self, x: float) -> float:
         w, _ = self._size()
-        if self.centred:
+        lay = self.layout
+        if lay == "centred":
             return (x - w / 2) / (w / 2) * self.fmax
+        if lay == "flipped":
+            return (w - x) / w * self.fmax
         return x / w * self.fmax
 
     def _render(self):
@@ -222,9 +236,9 @@ class Waterfall(tk.Canvas):
 
     def set_dial(self, dial):
         if dial != self.dial:
-            was = self.centred
+            was = self.layout
             self.dial = dial
-            if self.centred != was and self.buf is not None:
+            if self.layout != was and self.buf is not None:
                 self.buf[:] = colormap(np.zeros(1))[0]   # different layout: start the picture afresh
                 self._render()
             self._draw_axis()
@@ -241,7 +255,7 @@ class Waterfall(tk.Canvas):
             return
         step = 100
         for f in range(0, int(self.fmax) + 1, step):
-            x = f / self.fmax * w
+            x = self.x_of(f)
             major = f % 500 == 0
             self.create_line(x, self.AXIS_H - (9 if major else 4), x, self.AXIS_H,
                              fill="#9aa" if major else "#566", tags="axis")
@@ -283,8 +297,6 @@ class Waterfall(tk.Canvas):
             sub = "carrier" if off == 0 else f"{off / 1000:+.1f} kHz"
             self.create_text(xx, 24, text=sub, fill="#ffd43b" if off == 0 else "#7f8c99", anchor=anchor,
                              font=("Segoe UI", 8, "bold" if off == 0 else "normal"), tags="axis")
-        self.create_text(w - 6, self.AXIS_H - 20, text="AM: centred on the station", fill="#7f8c99",
-                         anchor="e", font=("Segoe UI", 8), tags="axis")
         # the carrier: a thin dashed line down the middle of the picture
         self.create_line(w / 2, self.AXIS_H, w / 2, h, fill="#ffd43b", dash=(3, 5), tags="centre")
 

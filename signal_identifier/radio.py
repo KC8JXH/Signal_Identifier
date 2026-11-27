@@ -164,6 +164,22 @@ def rf_frequency(dial_hz: float | None, mode: str, audio_hz: float,
 RTTY_MARK = 2125.0
 
 
+def waterfall_layout(mode: str) -> str:
+    """How the detailed (audio) waterfall is laid out, so that frequency always
+    rises from left to right like the band scope:
+      "normal"  - 0 Hz audio on the left (USB, CW, RTTY-R: the dial is at the left)
+      "flipped" - 0 Hz audio on the right (LSB, CW-R, RTTY: the dial is at the right)
+      "centred" - the tuned frequency in the middle (AM, FM)"""
+    m = (mode or "").upper().replace("-", "").replace(" ", "").replace("_", "")
+    if m.startswith(("AM", "FM", "WFM")):
+        return "centred"
+    lo = rf_frequency(10_000_000, mode, 100.0, 600.0)
+    hi = rf_frequency(10_000_000, mode, 1100.0, 600.0)
+    if lo is not None and hi is not None and hi < lo:
+        return "flipped"
+    return "normal"
+
+
 def tune_target(rf_hz: float, mode: str, snap_digital: bool = False) -> float | None:
     """Dial frequency that puts the signal at `rf_hz` where you want it:
     CW and RTTY right on frequency (your CW pitch / the mark tone), sideband

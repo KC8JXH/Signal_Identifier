@@ -593,3 +593,14 @@ def test_rigctld_tune():
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+
+@pytest.mark.parametrize("mode,layout", [
+    ("USB", "normal"), ("USB-D", "normal"), ("CW", "normal"), ("RTTY-R", "normal"),
+    ("LSB", "flipped"), ("LSB-D", "flipped"), ("CW-R", "flipped"), ("RTTY", "flipped"),
+    ("AM", "centred"), ("FM", "centred"), ("", "normal"),
+])
+def test_waterfall_layout(mode, layout):
+    """Frequency always rises left to right in the detailed waterfall."""
+    assert R.waterfall_layout(mode) == layout
