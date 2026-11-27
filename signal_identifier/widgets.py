@@ -68,6 +68,48 @@ class MeterBar(tk.Canvas):
         self.itemconfigure(self.tick, state="normal")
 
 
+# ---------------------------------------------------------------- scrolling picture
+
+
+class ScrollingImage:
+    """A picture that gains one new line at the top and scrolls down.
+
+    Rebuilding the whole picture for every line (a few MB each time) kept the
+    window too busy to answer menus and clicks. Instead the picture is a ring:
+    each new line is written into one row of a Tk photo image, and the image
+    is shown twice, one copy above the other, moved so that the newest row is
+    at the top. Nothing is copied; only one row is written per line."""
+
+    def __init__(self, canvas: tk.Canvas, x: int, y: int, tag: str):
+        self.canvas, self.x, self.y, self.tag = canvas, x, y, tag
+        self.img = None
+        self.w = self.h = 0
+        self.top = 0          # image row currently shown at the top
+
+    def load(self, buf: np.ndarray):
+        """Show a whole picture (rows x width x RGB), e.g. after a resize."""
+        h, w, _ = buf.shape
+        ppm = f"P6 {w} {h} 255 ".encode() + np.ascontiguousarray(buf).tobytes()
+        self.img = tk.PhotoImage(data=ppm, format="PPM")
+        self.w, self.h, self.top = w, h, 0
+        self.canvas.delete(self.tag)
+        self.canvas.create_image(self.x, self.y, image=self.img, anchor="nw", tags=(self.tag, self.tag + "1"))
+        self.canvas.create_image(self.x, self.y + h, image=self.img, anchor="nw", tags=(self.tag, self.tag + "2"))
+        self.canvas.tag_lower(self.tag)      # scales, labels etc. stay on top
+
+    def push(self, line: np.ndarray):
+        """Add one line (width x RGB) at the top; everything else moves down one row."""
+        if self.img is None or len(line) != self.w:
+            return False
+        self.top = (self.top - 1) % self.h
+        row = tk.PhotoImage(data=f"P6 {self.w} 1 255 ".encode() + np.ascontiguousarray(line).tobytes(),
+                            format="PPM")
+        self.img.tk.call(self.img, "copy", row, "-to", 0, self.top)
+        self.canvas.coords(self.tag + "1", self.x, self.y - self.top)
+        self.canvas.coords(self.tag + "2", self.x, self.y - self.top + self.h)
+        return True
+
+
 # ---------------------------------------------------------------- waterfall
 
 
@@ -106,6 +148,7 @@ class Waterfall(tk.Canvas):
         self.ref = None
         self.dial = None      # (dial_hz, mode, pitch) when the radio is connected
         self.markers = []
+        self.pic = ScrollingImage(self, 0, self.AXIS_H, "wf")
         self.bind("<Configure>", lambda e: self._resize())
 
     # -- geometry --------------------------------------------------------------
@@ -177,11 +220,12 @@ class Waterfall(tk.Canvas):
         self.ref = ref_now if self.ref is None else 0.8 * self.ref + 0.2 * ref_now
         v = (row - self.ref + 2) / self.RANGE_DB
         line = colormap(v)
-        self.buf[1:] = self.buf[:-1]
+        self.buf[1:] = self.buf[:-1]      # kept for resizing / redrawing
         self.buf[0] = line
         if self.message:
             self.set_message("")
-        self._render()
+        if not self.pic.push(line):
+            self._render()
 
     def _row(self, p, freqs, width):
         """Spectrum from 0 Hz to fmax squeezed into `width` pixels (peak per pixel)."""
@@ -223,14 +267,7 @@ class Waterfall(tk.Canvas):
     def _render(self):
         if self.buf is None:
             return
-        h, w, _ = self.buf.shape
-        ppm = f"P6 {w} {h} 255 ".encode() + self.buf.tobytes()
-        img = tk.PhotoImage(data=ppm, format="PPM")
-        if self.img is None or not self.find_withtag("wf"):
-            self.create_image(0, self.AXIS_H, image=img, anchor="nw", tags="wf")
-        else:
-            self.itemconfig("wf", image=img)
-        self.img = img  # keep a reference so Tk doesn't discard it
+        self.pic.load(self.buf)
 
     # -- scale and labels --------------------------------------------------------
 
@@ -362,6 +399,7 @@ class BandScope(tk.Canvas):
         self.on_click = on_click
         self.buf = None
         self.img = None
+        self.pic = ScrollingImage(self, 0, self.AXIS_H + self.HINT_H, "img")
         self.view = None          # (lo_hz, hi_hz) shown across the width
         self.last_sweep = None
         self.state = None         # RadioState
@@ -436,7 +474,8 @@ class BandScope(tk.Canvas):
         self.buf[1:] = self.buf[:-1]
         self.buf[0] = line
         self.message = ""
-        self._render()
+        if not self.pic.push(line):
+            self._render()
         self._overlay()
 
     def set_message(self, text: str):
@@ -465,13 +504,7 @@ class BandScope(tk.Canvas):
                              width=w - 40, justify="center", tags="ov")
 
     def _render(self):
-        h, w, _ = self.buf.shape
-        img = tk.PhotoImage(data=f"P6 {w} {h} 255 ".encode() + self.buf.tobytes(), format="PPM")
-        if not self.find_withtag("img"):
-            self.create_image(0, self.top, image=img, anchor="nw", tags="img")
-        else:
-            self.itemconfig("img", image=img)
-        self.img = img
+        self.pic.load(self.buf)
 
     # -- overlay: scale, band plan, listening box ----------------------------
 

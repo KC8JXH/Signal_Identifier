@@ -292,6 +292,8 @@ class App:
         self.source = None
         self.radio = None
         self.last_result = None
+        self._analysis_thread = None
+        self._analysis_result = None
         self.meter_pos = 0.0
         self.settings = load_settings()
         root.title(APP_NAME)
@@ -458,6 +460,7 @@ class App:
             root.after(700, lambda: self.toggle(quiet=True))   # carry on listening like last time
         root.protocol("WM_DELETE_WINDOW", self.quit)
         root.after(ANALYSE_EVERY_MS, self.tick)
+        root.after(100, self._collect_analysis)
         root.after(100, self.level_tick)
         root.after(200, self.radio_tick)
         root.after(80, self.wf_tick)
@@ -1007,13 +1010,42 @@ class App:
                 audio = self.source.ring.tail(int(WINDOW_SECONDS * self.source.rate))
                 secs = len(audio) / self.source.rate
                 if secs >= 3:
-                    self.last_result = analyze(audio, self.source.rate, keep_spectrogram=False)
-                    self._show(self.last_result.detections, secs)
+                    # Identify in the background so the window (and its menus)
+                    # stays responsive; _collect_analysis() picks up the result.
+                    if self._analysis_thread is None or not self._analysis_thread.is_alive():
+                        source = self.source
+                        self._analysis_thread = threading.Thread(
+                            target=self._analyse_in_background, args=(audio, source.rate, secs, source),
+                            daemon=True)
+                        self._analysis_thread.start()
                 else:
                     self.status.config(text=f"Listening… gathering audio ({secs:.0f} s)")
         except Exception as e:
             self.status.config(text=f"Problem analysing audio: {e}")
         self.root.after(ANALYSE_EVERY_MS, self.tick)
+
+    def _analyse_in_background(self, audio, rate, secs, source):
+        try:
+            res = analyze(audio, rate, keep_spectrogram=False)
+            self._analysis_result = (res, secs, source, None)
+        except Exception as e:
+            self._analysis_result = (None, secs, source, e)
+
+    def _collect_analysis(self):
+        """Runs on the window's thread: show the latest background result."""
+        got, self._analysis_result = self._analysis_result, None
+        if got is not None:
+            res, secs, source, err = got
+            # ignore results for audio from before listening was stopped/restarted
+            if source is self.source and self.source is not None and self.identify.get():
+                if err is not None:
+                    self.status.config(text=f"Problem analysing audio: {err}")
+                else:
+                    self.last_result = res
+                    self._show(res.detections, secs)
+                    if self.status.cget("text").startswith("Listening… gathering audio"):
+                        self.status.config(text="Listening.")
+        self.root.after(100, self._collect_analysis)
 
     def _show(self, dets, secs: float = 0):
         """Label each signal on the waterfall with its mode."""
